@@ -38,6 +38,8 @@
 
   var LS_KEY = 'pindou.v1';
   var RULER = 26;
+  // 格数范围，index.html 里滑块的 min/max 要与此保持一致
+  var GRID_MIN = 5, GRID_MAX = 200;
 
   /* ---------------- DOM ---------------- */
   var dom = {};
@@ -122,7 +124,7 @@
   function syncAspect() {
     if (!state.srcW) return;
     var h = Math.round(opts.gridW * state.srcH / state.srcW);
-    opts.gridH = Math.max(8, Math.min(256, h || 8));
+    opts.gridH = Math.max(GRID_MIN, Math.min(GRID_MAX, h || GRID_MIN));
     dom.gridH.value = dom.gridHNum.value = opts.gridH;
   }
 
@@ -552,7 +554,9 @@
     dom.statTotal.textContent = r.total.toLocaleString('zh-CN');
     dom.statSize.textContent = r.w + '×' + r.h;
     var mm = view.beadMm;
-    dom.statPhysical.textContent = (r.w * mm / 10).toFixed(1) + '×' + (r.h * mm / 10).toFixed(1) + ' cm';
+    // 大尺寸时去掉小数，否则 "100.0×75.0 cm" 会撑爆这一格
+    function cm(n) { var v = n * mm / 10; return v >= 100 ? String(Math.round(v)) : v.toFixed(1); }
+    dom.statPhysical.textContent = cm(r.w) + '×' + cm(r.h) + ' cm';
     dom.statPhysical.className = 'sm';       // 这格字最长，缩小一档免得换行
     var boards = Math.ceil(r.w / 29) * Math.ceil(r.h / 29);
     dom.sizeInfo.textContent = '共 ' + (r.w * r.h).toLocaleString('zh-CN') + ' 格 · 约需 '
@@ -1015,13 +1019,13 @@
 
     /* --- 尺寸 --- */
     function setGridW(v) {
-      opts.gridW = Math.max(8, Math.min(256, Math.round(v) || 8));
+      opts.gridW = Math.max(GRID_MIN, Math.min(GRID_MAX, Math.round(v) || GRID_MIN));
       dom.gridW.value = dom.gridWNum.value = opts.gridW;
       if (opts.lockAspect) syncAspect();
       scheduleCompute();
     }
     function setGridH(v) {
-      opts.gridH = Math.max(8, Math.min(256, Math.round(v) || 8));
+      opts.gridH = Math.max(GRID_MIN, Math.min(GRID_MAX, Math.round(v) || GRID_MIN));
       dom.gridH.value = dom.gridHNum.value = opts.gridH;
       scheduleCompute();
     }
@@ -1363,7 +1367,7 @@
     dither: ['none', 'fs', 'ordered']
   };
   var RANGES = {
-    gridW: [8, 256], gridH: [8, 256], mosaic: [1, 10], blur: [0, 5], sharpen: [0, 100],
+    gridW: [GRID_MIN, GRID_MAX], gridH: [GRID_MIN, GRID_MAX], mosaic: [1, 10], blur: [0, 5], sharpen: [0, 100],
     colors: [2, 64], ditherAmt: [0, 100], brightness: [-100, 100], contrast: [-100, 100],
     saturation: [-100, 100], gamma: [50, 200], bgTol: [0, 100], alphaTh: [0, 255]
   };

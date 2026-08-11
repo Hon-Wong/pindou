@@ -208,9 +208,9 @@
     /* ---------- 12. 细长条（极端宽高比） ---------- */
     await loadImg('fixtures/thin_strip.png', 'thin_strip.png');
     APP.opts.lockAspect = true; APP.opts.gridW = 100;
-    APP.opts.gridH = Math.max(8, Math.round(100 * 12 / 600));
+    APP.opts.gridH = Math.max(5, Math.round(100 * 12 / 600));
     var th = run({ colors: 8, fitMode: 'cover' });
-    ok('细长条 · 高度被夹到最小 8', th.h === 8, th.w + '×' + th.h);
+    ok('细长条 · 极端宽高比下高度夹到最小值 5', th.h === 5, th.w + '×' + th.h);
     ok('细长条 · 得到粉红系', th.codes.some(function (c) { return /^D/.test(c); }), th.codes.join(' '));
 
     /* ---------- 13. 大图性能 ---------- */
@@ -381,7 +381,7 @@
        && bo.paletteId === 'mard',
        [bo.algo, bo.dither, bo.fitMode, bo.sampleMode, bv.mode, bv.labelMode, bo.paletteId].join(' / '));
     ok('越界数值被夹到合法范围',
-       bo.gridW === 256 && bo.gridH >= 8 && bo.colors >= 2 && bo.colors <= 64
+       bo.gridW === 200 && bo.gridH >= 5 && bo.colors >= 2 && bo.colors <= 64
        && bv.cell >= 6 && bo.mosaic === 10 && bo.alphaTh <= 255,
        'w=' + bo.gridW + ' h=' + bo.gridH + ' colors=' + bo.colors
        + ' cell=' + bv.cell + ' mosaic=' + bo.mosaic + ' alphaTh=' + bo.alphaTh);
@@ -409,6 +409,26 @@
              : '仍然出不了图：' + rec.contentDocument.getElementById('status').textContent);
     rec.remove();
     W.localStorage.removeItem(lsKey);
+
+    /* ---------- 22b. 滑块范围与 JS 夹取范围必须一致 ---------- */
+    var gwEl = D.getElementById('gridW'), gwNum = D.getElementById('gridWNum');
+    var ghEl = D.getElementById('gridH'), ghNum = D.getElementById('gridHNum');
+    ok('格数滑块/数字框的 min-max 与代码夹取范围一致（5–200）',
+       [gwEl, gwNum, ghEl, ghNum].every(function (e) { return e.min === '5' && e.max === '200'; }),
+       'gridW ' + gwEl.min + '–' + gwEl.max + ' / gridH ' + ghEl.min + '–' + ghEl.max);
+    APP.opts.lockAspect = false;
+    D.getElementById('gridWNum').value = '3';
+    D.getElementById('gridWNum').dispatchEvent(new W.Event('change'));
+    await waitFor(function () { return APP.opts.gridW === 5; }, 100);
+    var tiny = APP.opts.gridW;
+    D.getElementById('gridWNum').value = '9999';
+    D.getElementById('gridWNum').dispatchEvent(new W.Event('change'));
+    await waitFor(function () { return APP.opts.gridW === 200; }, 100);
+    ok('手输超范围格数会被夹到 5 / 200', tiny === 5 && APP.opts.gridW === 200,
+       '输 3 → ' + tiny + '，输 9999 → ' + APP.opts.gridW);
+    var big = await waitFor(function () { return APP.summary() && APP.summary().w === 200; }, 300);
+    ok('200 格宽能正常出图', big, APP.summary() ? APP.summary().w + '×' + APP.summary().h
+       + ' · ' + APP.summary().total + ' 颗' : '没出图');
 
     /* ---------- 23. 响应式：任何宽度都不该出现横向溢出 ---------- */
     var WIDTHS = [380, 420, 560, 860, 1024];
