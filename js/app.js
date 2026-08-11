@@ -18,14 +18,17 @@
     disabled: {},         // { paletteId: {code:1} } 用户手动禁用的颜色
     hover: null,
     picking: false,
+    cropMode: false,
+    rawW: 0, rawH: 0,
     offX: 0, offY: 0,
     computeSeq: 0        // 每完成一次重算 +1，方便调试与自动化测试
   };
 
   var opts = {
     gridW: 64, gridH: 64, lockAspect: true, fitMode: 'cover',
+    rotate: 0, flipH: false, flipV: false, crop: null,
     mosaic: 1, sampleMode: 'area', blur: 0, sharpen: 0,
-    paletteId: 'mard', algo: 'kmeans', colors: 16,
+    paletteId: 'mard221', algo: 'kmeans', colors: 16,
     dither: 'none', ditherAmt: 70,
     brightness: 0, contrast: 0, saturation: 0, gamma: 100,
     bgRemove: false, bgColor: '#ffffff', bgTol: 12, alphaTh: 128
@@ -33,7 +36,8 @@
 
   var view = {
     mode: 'chart', cell: 24, labelMode: 'code', beadShape: 'round',
-    showGrid: true, showBold10: true, showRuler: true, beadMm: 5
+    showGrid: true, boldEvery: 10, showRuler: true, beadMm: 5,
+    ironLevel: 1, side: 'front', ironBoth: true, theme: 'purple', focus: false
   };
 
   var LS_KEY = 'pindou.v1';
@@ -44,6 +48,8 @@
   /* ---------------- DOM ---------------- */
   var dom = {};
   ['fileInput', 'dropZone', 'thumb', 'dropHint', 'imgMeta', 'btnOpen',
+   'cropStage', 'cropBox', 'cropInfo', 'imgTools', 'btnRotL', 'btnRotR',
+   'btnFlipH', 'btnFlipV', 'btnCrop', 'btnCropReset', 'scenePresets',
    'gridW', 'gridWNum', 'gridH', 'gridHNum', 'lockAspect', 'fitMode', 'presets', 'sizeInfo',
    'mosaic', 'mosaicVal', 'sampleMode', 'blur', 'blurVal', 'sharpen', 'sharpenVal',
    'paletteSel', 'btnPalette', 'palInfo', 'algo', 'colors', 'colorsNum',
@@ -52,7 +58,11 @@
    'saturation', 'saturationVal', 'gamma', 'gammaVal',
    'bgRemove', 'bgColor', 'btnPickBg', 'bgTol', 'bgTolVal', 'alphaTh', 'alphaThVal',
    'viewMode', 'cellSize', 'cellSizeVal', 'labelMode', 'beadShape',
-   'showGrid', 'showBold10', 'showRuler', 'beadMm',
+   'showGrid', 'boldEvery', 'showRuler', 'beadMm',
+   'btnClearHl', 'btnUndo', 'btnRedo', 'footVer', 'btnFull', 'btnFocus',
+   'ironLevel', 'sideView', 'ironBoth', 'themeDots',
+   'btnFeedback', 'feedbackModal', 'fbClose', 'fbType', 'fbText', 'fbContact',
+   'fbDiag', 'fbIncludeDiag', 'fbPrivacy', 'fbStatus', 'fbSend', 'fbCopy',
    'viewport', 'mainCanvas', 'rulerTop', 'rulerLeft', 'corner', 'scroller', 'spacer',
    'emptyState', 'busy', 'hoverInfo', 'status',
    'statColors', 'statTotal', 'statSize', 'statPhysical', 'colorList', 'listSearch', 'listSort',
@@ -95,10 +105,13 @@
     img.onload = function () {
       state.img = img;
       state.imgName = name || '图片';
-      state.srcW = img.naturalWidth; state.srcH = img.naturalHeight;
-      dom.thumb.src = url; dom.thumb.hidden = false; dom.dropHint.hidden = true;
-      dom.imgMeta.textContent = state.imgName + ' · ' + state.srcW + '×' + state.srcH + ' px';
-      if (opts.lockAspect) syncAspect();
+      state.rawW = img.naturalWidth; state.rawH = img.naturalHeight;
+      // 新图片就重置几何变换，否则会莫名其妙套用上一张的裁剪框
+      opts.rotate = 0; opts.flipH = false; opts.flipV = false; opts.crop = null;
+      setCropMode(false);
+      dom.cropStage.hidden = false; dom.dropHint.hidden = true;
+      dom.imgTools.hidden = false;
+      updateSource();
       state.highlight = -1;
       scheduleCompute(0);
     };
@@ -129,11 +142,116 @@
   }
 
   /* ==========================================================
+   * 旋转 / 翻转 / 裁剪
+   *
+   * rotatedCanvas()：只做旋转+翻转，缩略图显示的就是它，
+   *                  所以裁剪框的坐标可以直接用它的归一化坐标。
+   * sourceCanvas() ：在此基础上再裁剪，是后续所有处理的真正输入。
+   * ========================================================== */
+  // 缓存键直接比对图片对象本身，而不是自增计数器：
+  // 计数器一旦哪条路径忘了 +1，就会悄悄拿上一张图的结果继续算。
+  var rotCache = { img: null, rotate: -1, flipH: null, flipV: null, canvas: null };
+  var cropCache = { base: null, crop: '', canvas: null };
+
+  function rotatedCanvas() {
+    if (rotCache.canvas && rotCache.img === state.img
+        && rotCache.rotate === opts.rotate
+        && rotCache.flipH === opts.flipH && rotCache.flipV === opts.flipV) {
+      return rotCache.canvas;
+    }
+    var img = state.img, iw = img.naturalWidth, ih = img.naturalHeight;
+    var swap = (opts.rotate === 90 || opts.rotate === 270);
+    var w = swap ? ih : iw, h = swap ? iw : ih;
+    var cv = document.createElement('canvas');
+    cv.width = w; cv.height = h;
+    var ctx = cv.getContext('2d');
+    ctx.translate(w / 2, h / 2);
+    // 先 scale 后 rotate：翻转作用在「旋转之后」的画面上，
+    // 这样转过 90° 再点水平翻转，看到的也是水平翻转。
+    ctx.scale(opts.flipH ? -1 : 1, opts.flipV ? -1 : 1);
+    ctx.rotate(opts.rotate * Math.PI / 180);
+    ctx.drawImage(img, -iw / 2, -ih / 2);
+    rotCache = { img: img, rotate: opts.rotate, flipH: opts.flipH, flipV: opts.flipV, canvas: cv };
+    return cv;
+  }
+
+  function sourceCanvas() {
+    var rc = rotatedCanvas();
+    if (!opts.crop) return rc;
+    var k = [opts.crop.x, opts.crop.y, opts.crop.w, opts.crop.h].join(',');
+    if (cropCache.canvas && cropCache.base === rc && cropCache.crop === k) return cropCache.canvas;
+    var c = opts.crop;
+    var x = Math.round(c.x * rc.width), y = Math.round(c.y * rc.height);
+    var w = Math.max(1, Math.round(c.w * rc.width)), h = Math.max(1, Math.round(c.h * rc.height));
+    x = Math.max(0, Math.min(rc.width - 1, x));
+    y = Math.max(0, Math.min(rc.height - 1, y));
+    w = Math.min(w, rc.width - x); h = Math.min(h, rc.height - y);
+    var cv = document.createElement('canvas');
+    cv.width = w; cv.height = h;
+    cv.getContext('2d').drawImage(rc, x, y, w, h, 0, 0, w, h);
+    cropCache = { base: rc, crop: k, canvas: cv };
+    return cv;
+  }
+
+  /** 旋转/翻转后把裁剪框跟着变换，免得辛苦框好的区域被清掉 */
+  function mapCrop(fn) {
+    if (opts.crop) opts.crop = fn(opts.crop);
+  }
+  function rotateCropCW(c) { return { x: 1 - (c.y + c.h), y: c.x, w: c.h, h: c.w }; }
+  function rotateCropCCW(c) { return { x: c.y, y: 1 - (c.x + c.w), w: c.h, h: c.w }; }
+
+  /** 重新计算有效源尺寸（旋转/裁剪之后的），并同步比例锁定 */
+  function updateSource() {
+    if (!state.img) return;
+    var sc = sourceCanvas();
+    state.srcW = sc.width; state.srcH = sc.height;
+    if (opts.lockAspect) syncAspect();
+    refreshImgUI();
+  }
+
+  function refreshImgUI() {
+    if (!state.img) return;
+    var rc = rotatedCanvas();
+    // 缩略图显示旋转后的样子；大图先缩小一版，避免 dataURL 过大
+    var maxW = 420;
+    var s = Math.min(1, maxW / rc.width);
+    var pv = document.createElement('canvas');
+    pv.width = Math.max(1, Math.round(rc.width * s));
+    pv.height = Math.max(1, Math.round(rc.height * s));
+    var px = pv.getContext('2d');
+    px.imageSmoothingEnabled = true; px.imageSmoothingQuality = 'high';
+    px.drawImage(rc, 0, 0, pv.width, pv.height);
+    dom.thumb.src = pv.toDataURL('image/png');
+
+    dom.imgMeta.textContent = state.imgName + ' · ' + rc.width + '×' + rc.height + ' px'
+      + (opts.rotate ? ' · 已旋转 ' + opts.rotate + '°' : '')
+      + (opts.flipH || opts.flipV ? ' · 已翻转' : '');
+
+    if (opts.crop) {
+      var cw = Math.round(opts.crop.w * rc.width), chh = Math.round(opts.crop.h * rc.height);
+      dom.cropInfo.hidden = false;
+      dom.cropInfo.textContent = '已裁剪：' + cw + '×' + chh + ' px（占原图 '
+        + Math.round(opts.crop.w * opts.crop.h * 100) + '%）';
+    } else {
+      dom.cropInfo.hidden = true;
+    }
+    dom.btnFlipH.classList.toggle('on', !!opts.flipH);
+    dom.btnFlipV.classList.toggle('on', !!opts.flipV);
+    dom.btnCropReset.disabled = !opts.crop;
+    syncCropBox();
+  }
+
+  /* ==========================================================
    * 源图 → 适配画布（cover / contain / stretch）
    * ========================================================== */
   function fitSource(gw, gh) {
-    // 每格用 k×k 个源像素做面积平均，k 由原图分辨率决定
-    var k = Math.max(1, Math.min(12, Math.round(Math.max(state.srcW / gw, state.srcH / gh))));
+    // 尺寸直接问 sourceCanvas() 要，不读 state.srcW/srcH：
+    // 那两个值是给「比例锁定」和界面显示用的可变状态，
+    // 一旦和真正要绘制的画布不同步，裁剪区域就会算错。
+    var src = sourceCanvas();
+    var sw = src.width, sh = src.height;
+    // 每格用 k×k 个源像素做面积平均，k 由源图分辨率决定
+    var k = Math.max(1, Math.min(12, Math.round(Math.max(sw / gw, sh / gh))));
     var fw = gw * k, fh = gh * k;
 
     var cv = state.fitCanvas;
@@ -141,7 +259,6 @@
     var ctx = cv.getContext('2d', { willReadFrequently: true });
     ctx.clearRect(0, 0, fw, fh);
 
-    var sw = state.srcW, sh = state.srcH;
     var sx = 0, sy = 0, ssw = sw, ssh = sh, dx = 0, dy = 0, dw = fw, dh = fh;
 
     if (opts.fitMode === 'cover') {
@@ -155,13 +272,13 @@
     }
 
     // 逐级减半以获得干净的缩小结果
-    var src = progressiveDownscale(state.img, sw, sh, sx, sy, ssw, ssh, Math.round(dw), Math.round(dh));
+    var down = progressiveDownscale(src, sw, sh, sx, sy, ssw, ssh, Math.round(dw), Math.round(dh));
 
     var blockPx = k;                                  // 一个格子对应的源像素边长
     if (opts.blur > 0) ctx.filter = 'blur(' + (opts.blur * blockPx * 0.22).toFixed(2) + 'px)';
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';
-    ctx.drawImage(src.canvas, 0, 0, src.w, src.h, dx, dy, dw, dh);
+    ctx.drawImage(down.canvas, 0, 0, down.w, down.h, dx, dy, dw, dh);
     ctx.filter = 'none';
 
     return { w: fw, h: fh, data: ctx.getImageData(0, 0, fw, fh).data };
@@ -207,6 +324,130 @@
   }
 
   /* ==========================================================
+   * 裁剪框交互（用 Pointer Events，鼠标和触屏同一套代码）
+   * ========================================================== */
+  function setCropMode(on) {
+    state.cropMode = !!on && !!state.img;
+    dom.btnCrop.classList.toggle('on', state.cropMode);
+    dom.cropStage.classList.toggle('cropping', state.cropMode);
+    dom.cropBox.hidden = !state.cropMode;
+    if (state.cropMode) {
+      if (!opts.crop) opts.crop = { x: 0.1, y: 0.1, w: 0.8, h: 0.8 };
+      syncCropBox();
+      setStatus('拖动框选要保留的区域；再点一次「裁剪」结束');
+    } else {
+      setStatus('');
+    }
+  }
+
+  function syncCropBox() {
+    if (!opts.crop || dom.cropBox.hidden) return;
+    var c = opts.crop;
+    dom.cropBox.style.left = (c.x * 100) + '%';
+    dom.cropBox.style.top = (c.y * 100) + '%';
+    dom.cropBox.style.width = (c.w * 100) + '%';
+    dom.cropBox.style.height = (c.h * 100) + '%';
+  }
+
+  function initCropDrag() {
+    var drag = null;
+    var MIN = 0.04;                       // 裁剪框最小占比，防止缩成一条线
+
+    function pos(e) {
+      var r = dom.thumb.getBoundingClientRect();
+      return {
+        x: Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)),
+        y: Math.max(0, Math.min(1, (e.clientY - r.top) / r.height))
+      };
+    }
+
+    dom.cropStage.addEventListener('pointerdown', function (e) {
+      if (!state.cropMode) return;
+      e.preventDefault(); e.stopPropagation();
+      var handle = e.target.dataset ? e.target.dataset.h : null;
+      var p = pos(e);
+      if (!handle && e.target !== dom.cropBox) {
+        // 在空白处按下 = 重新拉一个新框
+        opts.crop = { x: p.x, y: p.y, w: MIN, h: MIN };
+        handle = 'se';
+      }
+      drag = { handle: handle, start: p, orig: Object.assign({}, opts.crop) };
+      dom.cropStage.setPointerCapture(e.pointerId);
+    });
+
+    dom.cropStage.addEventListener('pointermove', function (e) {
+      if (!drag) return;
+      e.preventDefault();
+      var p = pos(e), o = drag.orig;
+      var dx = p.x - drag.start.x, dy = p.y - drag.start.y;
+      var c;
+      if (!drag.handle) {                                   // 整体移动
+        c = { x: o.x + dx, y: o.y + dy, w: o.w, h: o.h };
+        c.x = Math.max(0, Math.min(1 - c.w, c.x));
+        c.y = Math.max(0, Math.min(1 - c.h, c.y));
+      } else {
+        var x1 = o.x, y1 = o.y, x2 = o.x + o.w, y2 = o.y + o.h;
+        if (drag.handle.indexOf('w') >= 0) x1 = Math.min(x2 - MIN, Math.max(0, o.x + dx));
+        if (drag.handle.indexOf('e') >= 0) x2 = Math.max(x1 + MIN, Math.min(1, o.x + o.w + dx));
+        if (drag.handle.indexOf('n') >= 0) y1 = Math.min(y2 - MIN, Math.max(0, o.y + dy));
+        if (drag.handle.indexOf('s') >= 0) y2 = Math.max(y1 + MIN, Math.min(1, o.y + o.h + dy));
+        c = { x: x1, y: y1, w: x2 - x1, h: y2 - y1 };
+      }
+      opts.crop = c;
+      syncCropBox();
+    });
+
+    function end(e) {
+      if (!drag) return;
+      drag = null;
+      try { dom.cropStage.releasePointerCapture(e.pointerId); } catch (err) {}
+      updateSource();
+      scheduleCompute(0);
+      commit();
+    }
+    dom.cropStage.addEventListener('pointerup', end);
+    dom.cropStage.addEventListener('pointercancel', end);
+  }
+
+  /* ==========================================================
+   * 场景预设
+   * ========================================================== */
+  var SCENES = {
+    photo: { label: '照片',
+      sampleMode: 'area', algo: 'kmeans', colors: 24, dither: 'none',
+      mosaic: 1, blur: 0, sharpen: 15, contrast: 6, saturation: 8, gamma: 100 },
+    // 动漫/插画：大片平涂 + 细线稿。用众数采样保住平涂区不糊，
+    // 关掉抖动免得干净色块被打成噪点，锐化把线条拉回来，饱和度补一点。
+    anime: { label: '动漫插画',
+      sampleMode: 'dominant', algo: 'kmeans', colors: 20, dither: 'none',
+      mosaic: 1, blur: 0, sharpen: 38, contrast: 10, saturation: 18, gamma: 100 },
+    pixel: { label: '像素画',
+      sampleMode: 'dominant', algo: 'direct', colors: 32, dither: 'none',
+      mosaic: 1, blur: 0, sharpen: 0, contrast: 0, saturation: 0, gamma: 100 },
+    flat:  { label: '扁平 Logo',
+      sampleMode: 'dominant', algo: 'kmeans', colors: 8, dither: 'none',
+      mosaic: 1, blur: 0, sharpen: 0, contrast: 0, saturation: 0, gamma: 100 },
+    mono:  { label: '单色剪影',
+      sampleMode: 'area', algo: 'kmeans', colors: 2, dither: 'none',
+      mosaic: 1, blur: 0, sharpen: 20, contrast: 35, saturation: -100, gamma: 100 }
+  };
+
+  function applyScene(id) {
+    var s = SCENES[id];
+    if (!s) return;
+    Object.keys(s).forEach(function (k) { if (k !== 'label') opts[k] = s[k]; });
+    state.scene = id;
+    [].forEach.call(dom.scenePresets.children, function (b) {
+      b.classList.toggle('on', b.dataset.p === id);
+    });
+    syncUI();
+    updatePalCount();
+    setStatus('已套用预设：' + s.label);
+    scheduleCompute(0);
+    commit();
+  }
+
+  /* ==========================================================
    * 主流程
    * ========================================================== */
   var computeTimer = null;
@@ -234,6 +475,10 @@
   function compute() {
     var t0 = performance.now();
     var gw = opts.gridW, gh = opts.gridH;
+    if (state.img) {                       // 让显示用的源尺寸始终跟着真实画布走
+      var sc0 = sourceCanvas();
+      state.srcW = sc0.width; state.srcH = sc0.height;
+    }
 
     var fit = fitSource(gw, gh);
     if (opts.bgRemove) removeBg(fit.data, opts.bgColor, opts.bgTol);
@@ -295,6 +540,7 @@
     state.computeSeq++;
 
     setStatus('生成完成 · ' + sub2.length + ' 色 · ' + Math.round(performance.now() - t0) + ' ms');
+    commitLater();
     updateStats();
     renderColorList();
     layout();
@@ -390,7 +636,7 @@
       var py = Math.round(oy + y * cell);
       for (var x = c0; x <= c1; x++) {
         var px = Math.round(ox + x * cell);
-        var i = r.idx[y * r.w + x];
+        var i = r.idx[y * r.w + (mirrored() && view.mode === 'preview' ? r.w - 1 - x : x)];
         if (i < 0) {
           ctx.fillStyle = th.empty;
           ctx.fillRect(px, py, cell, cell);
@@ -402,7 +648,7 @@
         if (view.mode === 'preview') {
           ctx.fillStyle = th.empty;
           ctx.fillRect(px, py, cell, cell);
-          drawBead(ctx, px, py, cell, col.hex, dim);
+          drawBead(ctx, px, py, cell, col.hex, dim, effIronLevel());
         } else {
           ctx.fillStyle = col.hex;
           ctx.fillRect(px, py, cell, cell);
@@ -440,15 +686,16 @@
       }
       ctx.stroke();
     }
-    if (view.showBold10 && cell >= 4) {
+    if (view.boldEvery && cell >= 4) {
       ctx.lineWidth = 1.6;
       ctx.strokeStyle = th.bold;
       ctx.beginPath();
-      for (var bx = Math.floor(c0 / 10) * 10; bx <= c1 + 1; bx += 10) {
+      var BE = view.boldEvery;
+      for (var bx = Math.floor(c0 / BE) * BE; bx <= c1 + 1; bx += BE) {
         var X2 = Math.round(ox + bx * cell) + 0.5;
         ctx.moveTo(X2, Math.max(0, oy)); ctx.lineTo(X2, Math.min(ch, oy + r.h * cell));
       }
-      for (var by = Math.floor(r0 / 10) * 10; by <= r1 + 1; by += 10) {
+      for (var by = Math.floor(r0 / BE) * BE; by <= r1 + 1; by += BE) {
         var Y2 = Math.round(oy + by * cell) + 0.5;
         ctx.moveTo(Math.max(0, ox), Y2); ctx.lineTo(Math.min(cw, ox + r.w * cell), Y2);
       }
@@ -468,27 +715,75 @@
     drawRulers();
   }
 
-  function drawBead(ctx, px, py, cell, hex, dim) {
+  /**
+   * 熨烫程度对应的外观参数（示意，参考常见教程里的三档手感）：
+   *   0 生豆   —— 圆环状，孔大，颗粒之间留缝
+   *   1 轻烫   —— 标准做法，边缘刚熔合，孔仍清晰可见
+   *   2 中烫   —— 缝隙合上、孔缩小，圆角方块，开始有光泽
+   *   3 重烫   —— 全熔封孔，接近平整方块，光泽最强
+   */
+  var IRON = [
+    { fill: 0.90, round: 0.50, hole: 0.19, gloss: 0.10, edge: 0.16 },
+    { fill: 0.96, round: 0.44, hole: 0.155, gloss: 0.14, edge: 0.13 },
+    { fill: 1.00, round: 0.30, hole: 0.085, gloss: 0.20, edge: 0.09 },
+    { fill: 1.00, round: 0.14, hole: 0,     gloss: 0.30, edge: 0.05 }
+  ];
+
+  function roundRect(ctx, x, y, w, h, r) {
+    r = Math.min(r, w / 2, h / 2);
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
+
+  function drawBead(ctx, px, py, cell, hex, dim, lvl) {
+    var p = IRON[lvl == null ? view.ironLevel : lvl] || IRON[1];
     var cx = px + cell / 2, cy = py + cell / 2;
-    var R = cell * 0.46, hole = cell * 0.17;
     ctx.save();
     if (dim) ctx.globalAlpha = 0.25;
-    if (view.beadShape === 'square') {
-      ctx.fillStyle = hex;
-      ctx.fillRect(px + cell * 0.06, py + cell * 0.06, cell * 0.88, cell * 0.88);
+
+    var size = cell * p.fill, off = (cell - size) / 2;
+    ctx.fillStyle = hex;
+    if (view.beadShape === 'square' || p.round < 0.2) {
+      roundRect(ctx, px + off, py + off, size, size, size * p.round);
+      ctx.fill();
+    } else if (p.round >= 0.48) {
+      ctx.beginPath(); ctx.arc(cx, cy, size / 2, 0, Math.PI * 2); ctx.fill();
     } else {
-      ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2);
-      ctx.fillStyle = hex; ctx.fill();
+      roundRect(ctx, px + off, py + off, size, size, size * p.round);
+      ctx.fill();
     }
-    if (cell >= 7) {
-      ctx.beginPath(); ctx.arc(cx, cy, hole, 0, Math.PI * 2);
-      ctx.fillStyle = 'rgba(0,0,0,.30)'; ctx.fill();
-      // 顶部高光，让豆子有立体感
-      ctx.beginPath(); ctx.arc(cx - R * 0.28, cy - R * 0.3, R * 0.5, 0, Math.PI * 2);
-      ctx.fillStyle = 'rgba(255,255,255,.16)'; ctx.fill();
+
+    if (cell >= 6) {
+      if (p.hole > 0) {                                   // 孔
+        ctx.beginPath(); ctx.arc(cx, cy, cell * p.hole, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(0,0,0,' + p.edge * 2 + ')'; ctx.fill();
+      }
+      if (p.gloss > 0) {                                  // 高光
+        ctx.beginPath();
+        ctx.arc(cx - size * 0.16, cy - size * 0.18, size * (p.hole > 0 ? 0.26 : 0.34), 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(255,255,255,' + p.gloss + ')'; ctx.fill();
+      }
+      if (p.edge > 0.06) {                                // 颗粒描边，强化未熔感
+        ctx.strokeStyle = 'rgba(0,0,0,' + p.edge * 0.6 + ')';
+        ctx.lineWidth = Math.max(0.5, cell * 0.03);
+        if (p.round >= 0.48) { ctx.beginPath(); ctx.arc(cx, cy, size / 2, 0, Math.PI * 2); ctx.stroke(); }
+        else { roundRect(ctx, px + off, py + off, size, size, size * p.round); ctx.stroke(); }
+      }
     }
     ctx.restore();
   }
+
+  /** 反面看到的是镜像；单面熨烫时反面仍是生豆的样子 */
+  function effIronLevel() {
+    if (view.side === 'back' && !view.ironBoth) return 0;
+    return view.ironLevel;
+  }
+  function mirrored() { return view.side === 'back'; }
 
   function drawRulers() {
     if (!view.showRuler) return;
@@ -526,7 +821,7 @@
       if (step > 1 && n % step !== 0 && n !== 1) continue;
       var X = ox + x * cell + cell / 2;
       if (X < -10 || X > tw + 10) continue;
-      tctx.fillStyle = (n % 10 === 0) ? '#c0392b' : th.rulerFg;
+      tctx.fillStyle = (view.boldEvery && n % view.boldEvery === 0) ? '#c0392b' : th.rulerFg;
       tctx.fillText(String(n), X, tHh / 2);
     }
     var r0 = Math.max(0, Math.floor(-oy / cell)), r1 = Math.min(r.h - 1, Math.ceil((lh - oy) / cell));
@@ -535,7 +830,7 @@
       if (step > 1 && m % step !== 0 && m !== 1) continue;
       var Y = oy + y * cell + cell / 2;
       if (Y < -10 || Y > lh + 10) continue;
-      lctx.fillStyle = (m % 10 === 0) ? '#c0392b' : th.rulerFg;
+      lctx.fillStyle = (view.boldEvery && m % view.boldEvery === 0) ? '#c0392b' : th.rulerFg;
       lctx.fillText(String(m), lw / 2, Y);
     }
   }
@@ -587,6 +882,7 @@
   function renderColorList() {
     var r = state.result;
     dom.colorList.innerHTML = '';
+    dom.btnClearHl.hidden = !(r && state.highlight >= 0);
     if (!r) return;
     var kw = (dom.listSearch.value || '').trim().toLowerCase();
     var maxC = Math.max.apply(null, r.counts.concat([1]));
@@ -611,6 +907,7 @@
           disabledSet()[col.code] = 1;
           state.highlight = -1;
           scheduleCompute(0);
+          commit();
           return;
         }
         state.highlight = state.highlight === i ? -1 : i;
@@ -691,13 +988,13 @@
     for (x = 0; x < r.w; x++) {
       var n = x + 1;
       if (step > 1 && n % step !== 0 && n !== 1) continue;
-      ctx.fillStyle = n % 10 === 0 ? '#c0392b' : '#555';
+      ctx.fillStyle = (view.boldEvery && n % view.boldEvery === 0) ? '#c0392b' : '#555';
       ctx.fillText(String(n), ox + x * cell + cell / 2, oy - R / 2);
     }
     for (y = 0; y < r.h; y++) {
       var m = y + 1;
       if (step > 1 && m % step !== 0 && m !== 1) continue;
-      ctx.fillStyle = m % 10 === 0 ? '#c0392b' : '#555';
+      ctx.fillStyle = (view.boldEvery && m % view.boldEvery === 0) ? '#c0392b' : '#555';
       ctx.fillText(String(m), ox - R / 2, oy + y * cell + cell / 2);
     }
 
@@ -731,9 +1028,10 @@
     for (x = 0; x <= r.w; x++) { ctx.moveTo(ox + x * cell + 0.5, oy); ctx.lineTo(ox + x * cell + 0.5, oy + r.h * cell); }
     for (y = 0; y <= r.h; y++) { ctx.moveTo(ox, oy + y * cell + 0.5); ctx.lineTo(ox + r.w * cell, oy + y * cell + 0.5); }
     ctx.stroke();
+    var be = view.boldEvery || 10;
     ctx.lineWidth = 2; ctx.strokeStyle = '#6b7280'; ctx.beginPath();
-    for (x = 0; x <= r.w; x += 10) { ctx.moveTo(ox + x * cell + 0.5, oy); ctx.lineTo(ox + x * cell + 0.5, oy + r.h * cell); }
-    for (y = 0; y <= r.h; y += 10) { ctx.moveTo(ox, oy + y * cell + 0.5); ctx.lineTo(ox + r.w * cell, oy + y * cell + 0.5); }
+    for (x = 0; x <= r.w; x += be) { ctx.moveTo(ox + x * cell + 0.5, oy); ctx.lineTo(ox + x * cell + 0.5, oy + r.h * cell); }
+    for (y = 0; y <= r.h; y += be) { ctx.moveTo(ox, oy + y * cell + 0.5); ctx.lineTo(ox + r.w * cell, oy + y * cell + 0.5); }
     ctx.stroke();
     ctx.strokeRect(ox + 0.5, oy + 0.5, r.w * cell, r.h * cell);
 
@@ -779,9 +1077,9 @@
     ctx.fillStyle = '#e6e7ea'; ctx.fillRect(0, 0, cv.width, cv.height);
     for (var y = 0; y < r.h; y++) {
       for (var x = 0; x < r.w; x++) {
-        var i = r.idx[y * r.w + x];
+        var i = r.idx[y * r.w + (mirrored() ? r.w - 1 - x : x)];
         if (i < 0) continue;
-        drawBead(ctx, x * cell, y * cell, cell, r.sub[i].hex, false);
+        drawBead(ctx, x * cell, y * cell, cell, r.sub[i].hex, false, effIronLevel());
       }
     }
     return cv;
@@ -1017,6 +1315,39 @@
       scheduleCompute(0);
     });
 
+    /* --- 旋转 / 翻转 / 裁剪 --- */
+    function rot(delta) {
+      if (!state.img) return;
+      opts.rotate = ((opts.rotate + delta) % 360 + 360) % 360;
+      mapCrop(delta > 0 ? rotateCropCW : rotateCropCCW);
+      updateSource(); scheduleCompute(0); commit();
+    }
+    dom.btnRotR.addEventListener('click', function () { rot(90); });
+    dom.btnRotL.addEventListener('click', function () { rot(-90); });
+    dom.btnFlipH.addEventListener('click', function () {
+      if (!state.img) return;
+      opts.flipH = !opts.flipH;
+      mapCrop(function (c) { return { x: 1 - (c.x + c.w), y: c.y, w: c.w, h: c.h }; });
+      updateSource(); scheduleCompute(0);
+    });
+    dom.btnFlipV.addEventListener('click', function () {
+      if (!state.img) return;
+      opts.flipV = !opts.flipV;
+      mapCrop(function (c) { return { x: c.x, y: 1 - (c.y + c.h), w: c.w, h: c.h }; });
+      updateSource(); scheduleCompute(0);
+    });
+    dom.btnCrop.addEventListener('click', function () { setCropMode(!state.cropMode); });
+    dom.btnCropReset.addEventListener('click', function () {
+      opts.crop = null; setCropMode(false); updateSource(); scheduleCompute(0); commit();
+    });
+    initCropDrag();
+
+    /* --- 场景预设 --- */
+    dom.scenePresets.addEventListener('click', function (e) {
+      var b = e.target.closest('button');
+      if (b) applyScene(b.dataset.p);
+    });
+
     /* --- 尺寸 --- */
     function setGridW(v) {
       opts.gridW = Math.max(GRID_MIN, Math.min(GRID_MAX, Math.round(v) || GRID_MIN));
@@ -1030,6 +1361,7 @@
       scheduleCompute();
     }
     dom.gridW.addEventListener('input', function () { setGridW(this.value); });
+    // 数字框不吸附到 5 的倍数：滑块给的是常用档位，手输才是精确控制
     dom.gridWNum.addEventListener('change', function () { setGridW(this.value); });
     dom.gridH.addEventListener('input', function () {
       if (opts.lockAspect) { dom.lockAspect.checked = false; opts.lockAspect = false; }
@@ -1101,16 +1433,56 @@
     });
     dom.labelMode.addEventListener('change', function () { view.labelMode = this.value; render(); saveSettings(); });
     dom.beadShape.addEventListener('change', function () { view.beadShape = this.value; render(); saveSettings(); });
-    [['showGrid', 'showGrid'], ['showBold10', 'showBold10'], ['showRuler', 'showRuler']].forEach(function (p) {
+    [['showGrid', 'showGrid'], ['showRuler', 'showRuler']].forEach(function (p) {
       dom[p[0]].addEventListener('change', function () {
         view[p[1]] = this.checked; layout(); render(); saveSettings();
       });
     });
     dom.beadMm.addEventListener('change', function () {
-      view.beadMm = parseFloat(this.value); updateStats(); saveSettings();
+      view.beadMm = parseFloat(this.value); updateStats(); saveSettings(); commit();
+    });
+    dom.ironLevel.addEventListener('change', function () {
+      view.ironLevel = parseInt(this.value, 10) || 0;
+      if (view.mode !== 'preview') {          // 调熨烫自然是想看成品
+        view.mode = 'preview';
+        [].forEach.call(dom.viewMode.children, function (b) {
+          b.classList.toggle('on', b.dataset.v === 'preview');
+        });
+        layout();
+      }
+      render(); saveSettings(); commit();
+    });
+    dom.sideView.addEventListener('click', function (e) {
+      var b = e.target.closest('button'); if (!b) return;
+      view.side = b.dataset.s;
+      [].forEach.call(dom.sideView.children, function (c) { c.classList.toggle('on', c === b); });
+      render(); saveSettings(); commit();
+    });
+    dom.ironBoth.addEventListener('change', function () {
+      view.ironBoth = this.checked; render(); saveSettings(); commit();
+    });
+    dom.themeDots.addEventListener('click', function (e) {
+      var b = e.target.closest('button'); if (!b) return;
+      applyTheme(b.dataset.t); saveSettings();
+    });
+    dom.btnFocus.addEventListener('click', function () { setFocus(!view.focus); });
+    dom.btnFull.addEventListener('click', toggleFullscreen);
+    document.addEventListener('fullscreenchange', function () {
+      dom.btnFull.classList.toggle('on', !!document.fullscreenElement);
+      setTimeout(function () { layout(); render(); }, 60);
+    });
+
+    dom.boldEvery.addEventListener('click', function (e) {
+      var b = e.target.closest('button'); if (!b) return;
+      view.boldEvery = +b.dataset.n;
+      [].forEach.call(dom.boldEvery.children, function (c) { c.classList.toggle('on', c === b); });
+      render(); saveSettings(); commit();
     });
 
     /* --- 清单 --- */
+    dom.btnClearHl.addEventListener('click', function () {
+      state.highlight = -1; renderColorList(); render();
+    });
     dom.listSearch.addEventListener('input', renderColorList);
     dom.listSort.addEventListener('change', renderColorList);
 
@@ -1183,7 +1555,9 @@
     });
     dom.btnSaveSettings.addEventListener('click', function () {
       dom.exportMenu.classList.add('hidden');
-      var data = { v: 1, opts: opts, view: view, disabled: state.disabled };
+      var og = Object.assign({}, opts);
+      delete og.rotate; delete og.flipH; delete og.flipV; delete og.crop;
+      var data = { v: 1, opts: og, view: view, disabled: state.disabled };
       if (P.hasCustom()) data.customCSV = P.toCSV(P.get('custom').colors);
       download('pindou_参数.json', new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
     });
@@ -1205,6 +1579,8 @@
       this.value = '';
     });
 
+    dom.btnUndo.addEventListener('click', undo);
+    dom.btnRedo.addEventListener('click', redo);
     dom.btnPrint.addEventListener('click', printChart);
     dom.btnReset.addEventListener('click', function () {
       if (!confirm('恢复所有参数为默认值？')) return;
@@ -1279,19 +1655,110 @@
       if (!same) render();
     }
     function pickCell(e) {
-      var c = cellAt(e); if (!c) return;
+      var c = cellAt(e);
+      // 点到网格外或点到空格 —— 都视为「取消高亮，显示全部」
+      if (!c) {
+        if (state.highlight >= 0) { state.highlight = -1; renderColorList(); render(); }
+        return;
+      }
       var r = state.result, i = r.idx[c.y * r.w + c.x];
       state.highlight = (i >= 0 && state.highlight !== i) ? i : -1;
       renderColorList(); render();
     }
 
+    /* --- 触屏：单指平移、双指捏合缩放 --- */
+    (function () {
+      var pts = new Map(), pinch = null;
+      dom.scroller.addEventListener('touchstart', function (e) {
+        if (e.touches.length === 2) e.preventDefault();      // 阻止页面自身缩放
+      }, { passive: false });
+      dom.scroller.addEventListener('pointerdown', function (e) {
+        if (e.pointerType !== 'touch') return;
+        pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+        if (pts.size === 2) {
+          var a = [].slice.call(pts.values());
+          pinch = {
+            dist: Math.hypot(a[0].x - a[1].x, a[0].y - a[1].y),
+            cell: view.cell,
+            cx: (a[0].x + a[1].x) / 2, cy: (a[0].y + a[1].y) / 2,
+            sl: dom.scroller.scrollLeft, st: dom.scroller.scrollTop
+          };
+        }
+      });
+      dom.scroller.addEventListener('pointermove', function (e) {
+        if (e.pointerType !== 'touch' || !pts.has(e.pointerId)) return;
+        pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+        if (pts.size !== 2 || !pinch) return;
+        e.preventDefault();
+        var a = [].slice.call(pts.values());
+        var d = Math.hypot(a[0].x - a[1].x, a[0].y - a[1].y);
+        if (pinch.dist < 10) return;
+        var next = Math.max(6, Math.min(64, Math.round(pinch.cell * d / pinch.dist)));
+        if (next === view.cell) return;
+        var rect = dom.scroller.getBoundingClientRect();
+        var mx = pinch.cx - rect.left + pinch.sl - state.offX;
+        var my = pinch.cy - rect.top + pinch.st - state.offY;
+        var old = view.cell;
+        view.cell = next;
+        dom.cellSize.value = next; dom.cellSizeVal.textContent = next + 'px';
+        layout();
+        dom.scroller.scrollLeft = mx / old * next - (pinch.cx - rect.left) + state.offX;
+        dom.scroller.scrollTop = my / old * next - (pinch.cy - rect.top) + state.offY;
+        render();
+      }, { passive: false });
+      function drop(e) {
+        pts.delete(e.pointerId);
+        if (pts.size < 2) { if (pinch) saveSettings(); pinch = null; }
+      }
+      dom.scroller.addEventListener('pointerup', drop);
+      dom.scroller.addEventListener('pointercancel', drop);
+    })();
+
     window.addEventListener('resize', function () { layout(); render(); });
     window.addEventListener('keydown', function (e) {
+      if ((e.metaKey || e.ctrlKey) && (e.key === 'z' || e.key === 'Z')) {
+        e.preventDefault();
+        e.shiftKey ? redo() : undo();
+        return;
+      }
+      if (/^(INPUT|TEXTAREA|SELECT)$/.test((e.target.tagName || '')) || e.metaKey || e.ctrlKey) return;
       if (e.key === 'Escape') {
-        if (!dom.paletteModal.classList.contains('hidden')) dom.paletteModal.classList.add('hidden');
+        if (!dom.feedbackModal.classList.contains('hidden')) dom.feedbackModal.classList.add('hidden');
+        else if (!dom.paletteModal.classList.contains('hidden')) dom.paletteModal.classList.add('hidden');
+        else if (state.cropMode) setCropMode(false);
         else if (state.highlight >= 0) { state.highlight = -1; renderColorList(); render(); }
+        return;
+      }
+      if (!state.img) return;
+      var SCENE_KEYS = { '1': 'photo', '2': 'anime', '3': 'pixel', '4': 'flat', '5': 'mono' };
+      if (SCENE_KEYS[e.key]) { applyScene(SCENE_KEYS[e.key]); return; }
+      if (e.key === '[') { dom.btnRotL.click(); return; }
+      if (e.key === ']') { dom.btnRotR.click(); return; }
+      if (e.key === 'c' || e.key === 'C') { setCropMode(!state.cropMode); return; }
+      if (e.key === 'f' || e.key === 'F') { toggleFullscreen(); return; }
+      if (e.key === '\\') { setFocus(!view.focus); return; }
+      if (e.key === 'v' || e.key === 'V') {           // 图纸 / 预览 切换
+        view.mode = view.mode === 'chart' ? 'preview' : 'chart';
+        [].forEach.call(dom.viewMode.children, function (b) {
+          b.classList.toggle('on', b.dataset.v === view.mode);
+        });
+        layout(); render(); saveSettings();
       }
     });
+
+    dom.btnFeedback.addEventListener('click', openFeedback);
+    dom.fbClose.addEventListener('click', function () { dom.feedbackModal.classList.add('hidden'); });
+    dom.feedbackModal.addEventListener('click', function (e) {
+      if (e.target === dom.feedbackModal) dom.feedbackModal.classList.add('hidden');
+    });
+    dom.fbSend.addEventListener('click', sendFeedback);
+    dom.fbCopy.addEventListener('click', function () {
+      var t = feedbackText();
+      navigator.clipboard.writeText(t)
+        .then(function () { dom.fbStatus.textContent = '已复制到剪贴板'; })
+        .catch(function () { dom.fbStatus.textContent = '复制失败，请手动选中上面的内容'; });
+    });
+    dom.footVer.textContent = 'v' + FEEDBACK.version;
 
     dom.btnSample.addEventListener('click', function () {
       if (PD.sampleImage) loadImageFromURL(PD.sampleImage, '示例图片');
@@ -1302,6 +1769,7 @@
     applyURLParams();
     layout();
     render();
+    commit();                       // 记下初始状态，撤销才有底可回
     if (!state.img) setStatus('准备就绪 · 打开一张图片开始');
   }
 
@@ -1330,6 +1798,11 @@
     if (q.has('view')) view.mode = q.get('view');
     if (q.has('cell')) view.cell = Math.max(6, Math.min(64, parseInt(q.get('cell'), 10) || view.cell));
     if (q.has('label')) view.labelMode = q.get('label');
+    if (q.has('iron')) view.ironLevel = parseInt(q.get('iron'), 10);
+    if (q.has('side')) view.side = q.get('side');
+    if (q.has('theme')) view.theme = q.get('theme');
+    if (q.has('rotate')) opts.rotate = parseInt(q.get('rotate'), 10);
+    if (q.has('bold')) view.boldEvery = parseInt(q.get('bold'), 10);
 
     sanitize();
     syncUI();
@@ -1337,6 +1810,223 @@
 
     if (q.get('demo') === '1' && PD.sampleImage) loadImageFromURL(PD.sampleImage, '示例图片');
     else if (q.has('img')) loadImageFromPath(q.get('img'), q.get('img').split('/').pop());
+  }
+
+  /* ==========================================================
+   * 主题 / 专注 / 全屏
+   * ========================================================== */
+  var THEMES = ['purple', 'blue', 'teal', 'rose', 'amber', 'light'];
+  var THEME_BG = {
+    purple: '#12101a', blue: '#0f1216', teal: '#0c1414',
+    rose: '#171014', amber: '#15110b', light: '#f4f5f8'
+  };
+
+  function applyTheme(id) {
+    if (THEMES.indexOf(id) < 0) id = 'purple';
+    view.theme = id;
+    document.documentElement.setAttribute('data-theme', id);
+    var meta = document.querySelector('meta[name=theme-color]');
+    if (meta) meta.setAttribute('content', THEME_BG[id]);
+    if (dom.themeDots) {
+      [].forEach.call(dom.themeDots.children, function (b) {
+        b.classList.toggle('on', b.dataset.t === id);
+      });
+    }
+    // 主题换了，画布的纸面/板面颜色也要跟着重画
+    if (dom.mainCanvas) { layout(); render(); }
+  }
+
+  function setFocus(on) {
+    view.focus = !!on;
+    document.body.classList.toggle('focus-mode', view.focus);
+    dom.btnFocus.classList.toggle('on', view.focus);
+    setTimeout(function () { layout(); render(); }, 30);
+    saveSettings();
+  }
+
+  function toggleFullscreen() {
+    if (document.fullscreenElement) {
+      (document.exitFullscreen || function () {}).call(document);
+    } else {
+      var el = document.documentElement;
+      var fn = el.requestFullscreen || el.webkitRequestFullscreen;
+      if (fn) {
+        fn.call(el).catch(function () { setStatus('浏览器拒绝了全屏请求'); });
+      } else {
+        setStatus('当前浏览器不支持全屏');
+      }
+    }
+  }
+
+  /* ==========================================================
+   * 撤销 / 重做
+   *
+   * 存的是「整份参数快照」而不是操作日志：动作种类多（禁色、预设、旋转、
+   * 裁剪、滑块…），逐个写反向操作既啰嗦又容易漏，快照最省心也最不会错。
+   * 快照很小（几百字节的 JSON），存 50 步也无所谓。
+   * ========================================================== */
+  var hist = { stack: [], idx: -1, max: 50, muted: false, timer: null };
+
+  function snapKey() {
+    return JSON.stringify({ opts: opts, view: view, disabled: state.disabled });
+  }
+
+  /** 立刻记一步（用于禁色、预设、旋转这类离散操作） */
+  function commit() {
+    if (hist.muted) return;
+    clearTimeout(hist.timer);
+    var k = snapKey();
+    if (hist.idx >= 0 && hist.stack[hist.idx] === k) return;
+    hist.stack = hist.stack.slice(0, hist.idx + 1);
+    hist.stack.push(k);
+    if (hist.stack.length > hist.max) hist.stack.shift();
+    hist.idx = hist.stack.length - 1;
+    updateUndoUI();
+  }
+
+  /** 拖滑块时用：安静一会儿再记，整段拖动合成一步 */
+  function commitLater() {
+    if (hist.muted) return;
+    clearTimeout(hist.timer);
+    hist.timer = setTimeout(commit, 650);
+  }
+
+  function updateUndoUI() {
+    dom.btnUndo.disabled = hist.idx <= 0;
+    dom.btnRedo.disabled = hist.idx >= hist.stack.length - 1;
+  }
+
+  function applySnapshot(str) {
+    var d;
+    try { d = JSON.parse(str); } catch (e) { return; }
+    hist.muted = true;
+    Object.keys(opts).forEach(function (k) { if (d.opts[k] !== undefined) opts[k] = d.opts[k]; });
+    Object.keys(view).forEach(function (k) { if (d.view[k] !== undefined) view[k] = d.view[k]; });
+    state.disabled = d.disabled || {};
+    sanitize();
+    syncUI();
+    updatePalCount();
+    if (state.img) { updateSource(); scheduleCompute(0); } else { layout(); render(); }
+    hist.muted = false;
+    updateUndoUI();
+  }
+
+  function undo() {
+    if (hist.idx <= 0) return;
+    clearTimeout(hist.timer);
+    hist.idx--;
+    applySnapshot(hist.stack[hist.idx]);
+    setStatus('已撤销');
+  }
+  function redo() {
+    if (hist.idx >= hist.stack.length - 1) return;
+    hist.idx++;
+    applySnapshot(hist.stack[hist.idx]);
+    setStatus('已重做');
+  }
+
+  /* ==========================================================
+   * 反馈
+   * ========================================================== */
+  var FEEDBACK = {
+    // 填上表单服务的接收地址（Formspree / Basin / Tally 等）后，
+    // 反馈会直接提交到后台，来访 IP 由该服务在服务端记录。
+    // 留空则退回到「打开预填好的 GitHub Issue」。
+    endpoint: '',
+    repo: 'Hon-Wong/pindou',
+    version: '2026.08.11'
+  };
+
+  /** 采集随反馈一起提交的环境信息；内容会原样展示给用户看过再发 */
+  function collectDiagnostics() {
+    var nav = navigator, scr = window.screen || {};
+    var r = state.result;
+    var d = {
+      时间: new Date().toISOString(),
+      版本: FEEDBACK.version,
+      页面: location.href.split('?')[0],
+      浏览器: nav.userAgent,
+      平台: nav.platform || '',
+      语言: nav.language,
+      时区: (function () {
+        try { return Intl.DateTimeFormat().resolvedOptions().timeZone; } catch (e) { return ''; }
+      })(),
+      屏幕: (scr.width || 0) + '×' + (scr.height || 0) + ' @' + (window.devicePixelRatio || 1) + 'x',
+      窗口: window.innerWidth + '×' + window.innerHeight,
+      触屏: ('ontouchstart' in window) || nav.maxTouchPoints > 0 ? '是' : '否',
+      当前图片: state.img ? (state.rawW + '×' + state.rawH + ' px') : '未载入',
+      当前参数: state.img ? {
+        格数: opts.gridW + '×' + opts.gridH,
+        色卡: opts.paletteId, 色数: opts.colors, 算法: opts.algo,
+        抖动: opts.dither, 马赛克: opts.mosaic, 采样: opts.sampleMode,
+        旋转: opts.rotate, 裁剪: opts.crop ? '有' : '无'
+      } : null,
+      当前结果: r ? (r.w + '×' + r.h + ' / ' + r.sub.length + ' 色 / ' + r.total + ' 颗') : '无'
+    };
+    return d;
+  }
+
+  function openFeedback() {
+    dom.fbStatus.textContent = '';
+    dom.fbDiag.textContent = JSON.stringify(collectDiagnostics(), null, 2);
+    dom.fbPrivacy.innerHTML = FEEDBACK.endpoint
+      ? '提交后由表单服务接收，<b>服务端会记录你的 IP 地址</b>用于识别重复反馈与滥用。'
+        + '以上信息你可以先看一遍，不想带就取消勾选。联系方式选填。'
+      : '当前未配置表单服务，点发送会打开 <b>GitHub Issue</b> 并预填好内容（需要 GitHub 账号）；'
+        + '也可以点「复制内容」自己发给作者。';
+    dom.feedbackModal.classList.remove('hidden');
+    setTimeout(function () { dom.fbText.focus(); }, 50);
+  }
+
+  function feedbackPayload() {
+    var body = {
+      type: dom.fbType.value,
+      typeLabel: dom.fbType.options[dom.fbType.selectedIndex].text,
+      message: dom.fbText.value.trim(),
+      contact: dom.fbContact.value.trim()
+    };
+    if (dom.fbIncludeDiag.checked) body.diagnostics = collectDiagnostics();
+    return body;
+  }
+
+  function feedbackText() {
+    var p = feedbackPayload();
+    var out = ['类型：' + p.typeLabel, '', p.message, ''];
+    if (p.contact) out.push('联系方式：' + p.contact, '');
+    if (p.diagnostics) {
+      out.push('---', '环境信息：', '```json', JSON.stringify(p.diagnostics, null, 2), '```');
+    }
+    return out.join('\n');
+  }
+
+  function sendFeedback() {
+    var msg = dom.fbText.value.trim();
+    if (msg.length < 5) { dom.fbStatus.textContent = '⚠️ 请先写点具体内容（至少 5 个字）'; return; }
+    dom.fbSend.disabled = true;
+    dom.fbStatus.textContent = '发送中…';
+
+    if (!FEEDBACK.endpoint) {
+      var url = 'https://github.com/' + FEEDBACK.repo + '/issues/new?title='
+        + encodeURIComponent('[反馈] ' + msg.slice(0, 40))
+        + '&body=' + encodeURIComponent(feedbackText());
+      window.open(url, '_blank', 'noopener');
+      dom.fbStatus.textContent = '已打开 GitHub Issue 页面，确认后点 Submit 即可。';
+      dom.fbSend.disabled = false;
+      return;
+    }
+
+    fetch(FEEDBACK.endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      body: JSON.stringify(feedbackPayload())
+    }).then(function (r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      dom.fbStatus.textContent = '✅ 已收到，谢谢！';
+      dom.fbText.value = '';
+      setTimeout(function () { dom.feedbackModal.classList.add('hidden'); }, 1200);
+    }).catch(function (e) {
+      dom.fbStatus.textContent = '❌ 发送失败（' + e.message + '），可以点「复制内容」手动发给作者。';
+    }).then(function () { dom.fbSend.disabled = false; });
   }
 
   /* ==========================================================
@@ -1348,8 +2038,13 @@
     // 期间的任何改动都会被一起写进去（比如刚点过「全不选」），
     // 下次打开就成了一个没有可用颜色的坏状态。
     var snapshot;
-    try { snapshot = JSON.stringify({ opts: opts, view: view, disabled: state.disabled }); }
-    catch (e) { return; }
+    try {
+      // 旋转/翻转/裁剪属于「当前这张图」，不跟着参数走，
+      // 否则下次打开换了张图还套着上一张的裁剪框
+      var geomFree = Object.assign({}, opts);
+      delete geomFree.rotate; delete geomFree.flipH; delete geomFree.flipV; delete geomFree.crop;
+      snapshot = JSON.stringify({ opts: geomFree, view: view, disabled: state.disabled });
+    } catch (e) { return; }
     clearTimeout(saveTimer);
     saveTimer = setTimeout(function () {
       try { localStorage.setItem(LS_KEY, snapshot); } catch (e) {}
@@ -1383,6 +2078,16 @@
     });
     opts.lockAspect = !!opts.lockAspect;
     opts.bgRemove = !!opts.bgRemove;
+    if ([0, 90, 180, 270].indexOf(+opts.rotate) < 0) opts.rotate = 0; else opts.rotate = +opts.rotate;
+    opts.flipH = !!opts.flipH; opts.flipV = !!opts.flipV;
+    var cr = opts.crop;
+    if (cr && ['x', 'y', 'w', 'h'].every(function (k) { return isFinite(cr[k]); })
+        && cr.w > 0.01 && cr.h > 0.01 && cr.x >= 0 && cr.y >= 0
+        && cr.x + cr.w <= 1.001 && cr.y + cr.h <= 1.001) {
+      opts.crop = { x: +cr.x, y: +cr.y, w: +cr.w, h: +cr.h };
+    } else {
+      opts.crop = null;
+    }
     if (!C.hexToRgb(opts.bgColor)) opts.bgColor = DEFAULTS.opts.bgColor;
     if (!P.all[opts.paletteId]) opts.paletteId = DEFAULTS.opts.paletteId;
 
@@ -1391,9 +2096,15 @@
     if (['round', 'square'].indexOf(view.beadShape) < 0) view.beadShape = DEFAULTS.view.beadShape;
     var cell = parseFloat(view.cell);
     view.cell = isFinite(cell) ? C.clamp(Math.round(cell), 6, 64) : DEFAULTS.view.cell;
+    if ([0, 1, 2, 3].indexOf(+view.ironLevel) < 0) view.ironLevel = 1; else view.ironLevel = +view.ironLevel;
+    if (['front', 'back'].indexOf(view.side) < 0) view.side = 'front';
+    view.ironBoth = !!view.ironBoth;
+    view.focus = !!view.focus;
+    if (THEMES.indexOf(view.theme) < 0) view.theme = 'purple';
     if ([2.6, 5, 10].indexOf(+view.beadMm) < 0) view.beadMm = DEFAULTS.view.beadMm;
     else view.beadMm = +view.beadMm;
-    ['showGrid', 'showBold10', 'showRuler'].forEach(function (k) { view[k] = !!view[k]; });
+    ['showGrid', 'showRuler'].forEach(function (k) { view[k] = !!view[k]; });
+    if ([0, 5, 10].indexOf(+view.boldEvery) < 0) view.boldEvery = 10; else view.boldEvery = +view.boldEvery;
     if (!state.disabled || typeof state.disabled !== 'object') state.disabled = {};
 
     // 一个「所有颜色都被禁用」的色卡什么也生成不了，不该跨会话保留下来，
@@ -1439,9 +2150,19 @@
     dom.labelMode.value = view.labelMode;
     dom.beadShape.value = view.beadShape;
     dom.showGrid.checked = view.showGrid;
-    dom.showBold10.checked = view.showBold10;
+    [].forEach.call(dom.boldEvery.children, function (b) {
+      b.classList.toggle('on', +b.dataset.n === view.boldEvery);
+    });
     dom.showRuler.checked = view.showRuler;
     dom.beadMm.value = String(view.beadMm);
+    dom.ironLevel.value = String(view.ironLevel);
+    dom.ironBoth.checked = view.ironBoth;
+    [].forEach.call(dom.sideView.children, function (b) {
+      b.classList.toggle('on', b.dataset.s === view.side);
+    });
+    applyTheme(view.theme);
+    document.body.classList.toggle('focus-mode', !!view.focus);
+    dom.btnFocus.classList.toggle('on', !!view.focus);
     [].forEach.call(dom.viewMode.children, function (c) { c.classList.toggle('on', c.dataset.v === view.mode); });
   }
 

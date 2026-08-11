@@ -66,8 +66,8 @@ ok('textOn 白底=黑字', C.textOn(255, 255, 255) === '#000000');
 ok('textOn 黑底=白字', C.textOn(0, 0, 0) === '#ffffff');
 
 /* ---- 色卡 ---- */
-var pal = P.get('mard').colors;
-ok('mard 90 色', pal.length === 90, 'len=' + pal.length);
+var pal = P.get('mard221').colors;
+ok('MARD 221 色', pal.length === 221, 'len=' + pal.length);
 var codes = {}, dupe = null;
 P.list().forEach(function (p) {
   var seen = {};
@@ -81,6 +81,10 @@ P.list().forEach(function (p) {
 ok('色号唯一且为「字母+数字」', dupe === null, dupe || '');
 ok('每色都有 lab', pal.every(function (c) { return c.lab && c.lab.length === 3; }));
 ok('series 解析', pal[0].series === 'A' && P.get('hama').colors[0].series === 'H');
+var cnt9 = {}; pal.forEach(function (c) { cnt9[c.series] = (cnt9[c.series] || 0) + 1; });
+ok('MARD 九大色系数量正确',
+   JSON.stringify(cnt9) === JSON.stringify({A:26,B:32,C:29,D:26,E:24,F:25,G:21,H:23,M:15}),
+   JSON.stringify(cnt9));
 
 var csv = P.parseCSV('X1,测试白,#FFFFFF\nX2,测试黑,#000000\n# 注释\nbad line\nX2,重复,#123456');
 ok('parseCSV 去重+过滤', csv.length === 2, JSON.stringify(csv));
@@ -147,7 +151,7 @@ var idx = Q.remap(g, 16, 16, sub, { dither: 'none', alphaTh: 128 });
 ok('remap 全部有值', Array.prototype.every.call(idx, function (v) { return v >= 0; }));
 var used = {}; Array.prototype.forEach.call(idx, function (v) { used[v] = 1; });
 ok('remap 用满 4 色', Object.keys(used).length === 4, Object.keys(used).join(','));
-ok('remap 左上为红系', /^D/.test(sub[idx[0]].code), sub[idx[0]].code + ' ' + sub[idx[0]].name);
+ok('remap 左上为 F 红系', /^F/.test(sub[idx[0]].code), sub[idx[0]].code + ' ' + sub[idx[0]].name);
 
 // 透明格保持 -1
 var idxA = Q.remap(gA, 16, 16, sub, { dither: 'none', alphaTh: 128 });

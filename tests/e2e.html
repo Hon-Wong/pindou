@@ -122,7 +122,7 @@
     await loadImg('fixtures/photo_landscape.png', 'photo_landscape.png');
     APP.opts.gridW = 64; APP.opts.gridH = 48; APP.opts.lockAspect = false;
     var s = run({ colors: 16, algo: 'kmeans', dither: 'none', mosaic: 1,
-                  sampleMode: 'area', paletteId: 'mard', alphaTh: 128,
+                  sampleMode: 'area', paletteId: 'mard221', alphaTh: 128,
                   brightness: 0, contrast: 0, saturation: 0, gamma: 100, bgRemove: false,
                   blur: 0, sharpen: 0, fitMode: 'cover' });
     ok('风景照 · 网格尺寸 64×48', s.w === 64 && s.h === 48, s.w + '×' + s.h);
@@ -130,8 +130,8 @@
     ok('风景照 · 色数 ≤ 16 且 ≥ 8', s.colors <= 16 && s.colors >= 8, s.colors + ' 色');
     ok('风景照 · 色号形如「字母+数字」', s.codes.every(function (c) { return /^[A-Za-z]+\d+:/.test(c); }),
        s.codes.slice(0, 6).join(' '));
-    ok('风景照 · 天空为蓝系 / 草地为绿系',
-       /^F/.test(codeAt(0, 0)) && /^G/.test(codeAt(32, 44)),
+    ok('风景照 · 天空落在 C 蓝青系 / 草地落在 B 绿系',
+       /^C/.test(codeAt(0, 0)) && /^B/.test(codeAt(32, 44)),
        '左上 ' + codeAt(0, 0) + '，下方 ' + codeAt(32, 44));
     ok('风景照 · 各色计数之和 = 总数',
        s.codes.reduce(function (a, c) { return a + (+c.split(':')[1]); }, 0) === s.total);
@@ -169,12 +169,12 @@
     run({ mosaic: 1 });
 
     /* ---------- 7. 色卡切换 ---------- */
-    [['mard', /^[ABCDEFGHS]\d+$/], ['hama', /^H\d+$/], ['basic', /^N\d+$/]].forEach(function (p) {
+    [['mard221', /^[ABCDEFGHM]\d+$/], ['hama', /^H\d+$/], ['basic', /^N\d+$/]].forEach(function (p) {
       var r = run({ paletteId: p[0], colors: 16 });
       var allMatch = r.codes.every(function (c) { return p[1].test(c.split(':')[0]); });
       ok('色卡 ' + p[0] + ' 只用本色卡色号', allMatch, r.codes.slice(0, 5).join(' '));
     });
-    run({ paletteId: 'mard' });
+    run({ paletteId: 'mard221' });
 
     /* ---------- 8. 透明 / 空格 ---------- */
     await loadImg('fixtures/sprite_pixel.png', 'sprite_pixel.png');
@@ -183,8 +183,8 @@
     ok('像素精灵 · 透明区变成空格', sp.empty > 100 && sp.empty < 32 * 32 * 0.8,
        '空格 ' + sp.empty + ' / ' + (32 * 32));
     ok('像素精灵 · 有豆子的格子 = 总数', sp.total + sp.empty === 32 * 32);
-    ok('像素精灵 · 出现红系蘑菇伞',
-       sp.codes.some(function (c) { return /^D/.test(c); }), sp.codes.join(' '));
+    ok('像素精灵 · 出现 F 红系蘑菇伞',
+       sp.codes.some(function (c) { return /^F/.test(c); }), sp.codes.join(' '));
 
     /* ---------- 9. 扁平插画 ---------- */
     await loadImg('fixtures/flat_logo.png', 'flat_logo.png');
@@ -211,7 +211,7 @@
     APP.opts.gridH = Math.max(5, Math.round(100 * 12 / 600));
     var th = run({ colors: 8, fitMode: 'cover' });
     ok('细长条 · 极端宽高比下高度夹到最小值 5', th.h === 5, th.w + '×' + th.h);
-    ok('细长条 · 得到粉红系', th.codes.some(function (c) { return /^D/.test(c); }), th.codes.join(' '));
+    ok('细长条 · 得到 E 粉玫系', th.codes.some(function (c) { return /^E/.test(c); }), th.codes.join(' '));
 
     /* ---------- 13. 大图性能 ---------- */
     await loadImg('fixtures/big_3000x2000.jpg', 'big_3000x2000.jpg');
@@ -227,16 +227,16 @@
     APP.opts.gridW = 48; APP.opts.gridH = 48;
     var base = run({ colors: 16, algo: 'kmeans', dither: 'none', sampleMode: 'area',
                      brightness: 0, contrast: 0, saturation: 0, gamma: 100 });
-    ok('人像 · 命中肤色系（H 系）',
-       base.codes.some(function (c) { return /^H/.test(c); }), base.codes.join(' '));
+    ok('人像 · 命中 G 棕肤系',
+       base.codes.some(function (c) { return /^G/.test(c); }), base.codes.join(' '));
     var dark = run({ brightness: -60 });
     var light = run({ brightness: 60 });
     ok('亮度调节改变配色结果',
        dark.codes.join() !== base.codes.join() && light.codes.join() !== base.codes.join(),
        '暗: ' + dark.codes.slice(0, 3).join(' ') + ' / 亮: ' + light.codes.slice(0, 3).join(' '));
     var gray = run({ brightness: 0, saturation: -100 });
-    ok('饱和度 -100 → 主要落在无彩色 A 系',
-       gray.codes.filter(function (c) { return /^A/.test(c); }).length >= gray.codes.length * 0.6,
+    ok('饱和度 -100 → 主要落在 H 黑白系 / M 大地系等中性色',
+       gray.codes.filter(function (c) { return /^[HM]/.test(c); }).length >= gray.codes.length * 0.6,
        gray.codes.join(' '));
     run({ saturation: 0 });
 
@@ -252,14 +252,14 @@
     /* ---------- 16. 禁用颜色 ---------- */
     await loadImg('fixtures/photo_landscape.png', 'photo_landscape.png');
     APP.opts.gridW = 64; APP.opts.gridH = 48;
-    var r16 = run({ colors: 16, algo: 'kmeans', paletteId: 'mard' });
+    var r16 = run({ colors: 16, algo: 'kmeans', paletteId: 'mard221' });
     var victim = r16.codes[0].split(':')[0];
-    APP.state.disabled.mard = {}; APP.state.disabled.mard[victim] = 1;
+    APP.state.disabled.mard221 = {}; APP.state.disabled.mard221[victim] = 1;
     var r17 = run({});
     ok('禁用某色后不再出现该色号',
        !r17.codes.some(function (c) { return c.split(':')[0] === victim; }),
        '禁用 ' + victim + ' → ' + r17.codes.slice(0, 6).join(' '));
-    APP.state.disabled.mard = {};
+    APP.state.disabled.mard221 = {};
     run({});
 
     /* ---------- 17. 导出 ---------- */
@@ -378,7 +378,7 @@
     ok('非法枚举值回落到默认',
        bo.algo === 'kmeans' && bo.dither === 'none' && bo.fitMode === 'cover'
        && bo.sampleMode === 'area' && bv.mode === 'chart' && bv.labelMode === 'code'
-       && bo.paletteId === 'mard',
+       && bo.paletteId === 'mard221',
        [bo.algo, bo.dither, bo.fitMode, bo.sampleMode, bv.mode, bv.labelMode, bo.paletteId].join(' / '));
     ok('越界数值被夹到合法范围',
        bo.gridW === 200 && bo.gridH >= 5 && bo.colors >= 2 && bo.colors <= 64
@@ -391,9 +391,9 @@
     var lsKey = 'pindou.v1';
     var saved = JSON.parse(W.localStorage.getItem(lsKey) || '{}');
     var allOff = {};
-    W.PD.palettes.get('mard').colors.forEach(function (c) { allOff[c.code] = 1; });
-    saved.disabled = { mard: allOff };
-    saved.opts = saved.opts || {}; saved.opts.paletteId = 'mard';
+    W.PD.palettes.get('mard221').colors.forEach(function (c) { allOff[c.code] = 1; });
+    saved.disabled = { mard221: allOff };
+    saved.opts = saved.opts || {}; saved.opts.paletteId = 'mard221';
     W.localStorage.setItem(lsKey, JSON.stringify(saved));
 
     var rec = document.createElement('iframe');
@@ -405,7 +405,7 @@
     var recOK = await waitFor(function () { return RW.PD && RW.PD.app && RW.PD.app.summary(); }, 200);
     ok('打开时若整张色卡都被禁用，会自动恢复而不是卡死', recOK,
        recOK ? RW.PD.app.summary().colors + ' 色 · 已恢复 '
-               + RW.PD.palettes.get('mard').colors.length + ' 色可用'
+               + RW.PD.palettes.get('mard221').colors.length + ' 色可用'
              : '仍然出不了图：' + rec.contentDocument.getElementById('status').textContent);
     rec.remove();
     W.localStorage.removeItem(lsKey);
@@ -430,8 +430,145 @@
     ok('200 格宽能正常出图', big, APP.summary() ? APP.summary().w + '×' + APP.summary().h
        + ' · ' + APP.summary().total + ' 颗' : '没出图');
 
+    /* ---------- 22c. 旋转 / 翻转 / 裁剪 ---------- */
+    await loadImg('fixtures/photo_landscape.png', 'photo_landscape.png');
+    APP.state.img.dataset && 0;
+    APP.opts.rotate = 0; APP.opts.flipH = false; APP.opts.flipV = false; APP.opts.crop = null;
+    APP.opts.lockAspect = false; APP.opts.gridW = 40; APP.opts.gridH = 30;
+    var flat = run({ colors: 12, algo: 'kmeans', dither: 'none', sampleMode: 'area', fitMode: 'cover' });
+    var topLeft0 = codeAt(0, 0), botLeft0 = codeAt(29, 0);
+
+    APP.opts.rotate = 180;
+    var rot180 = run({});
+    ok('旋转 180° 后上下左右都翻过来', codeAt(0, 0) !== topLeft0 && codeAt(29, 0) !== botLeft0,
+       '原左上 ' + topLeft0 + ' → ' + codeAt(0, 0) + '；原左下 ' + botLeft0 + ' → ' + codeAt(29, 0));
+    ok('旋转不改变格数与总数', rot180.w === 40 && rot180.h === 30 && rot180.total === 1200,
+       rot180.w + '×' + rot180.h);
+
+    APP.opts.rotate = 90;
+    var rot90 = run({});
+    ok('旋转 90° 后有效源尺寸宽高互换', APP.state.srcW === 600 && APP.state.srcH === 800,
+       '源 ' + APP.state.srcW + '×' + APP.state.srcH + '（原图 800×600）');
+
+    APP.opts.rotate = 0;
+    APP.opts.flipH = true;
+    var fl = run({});
+    ok('水平翻转后左右列对调',
+       codeAt(0, 0) === (function () { APP.opts.flipH = false; run({}); var v = codeAt(0, 39); APP.opts.flipH = true; run({}); return v; })(),
+       '翻转后第 1 列 = 原第 40 列');
+    APP.opts.flipH = false; run({});
+
+    // 裁剪：只取原图上半部分（天空），应该基本只剩蓝青系
+    APP.opts.crop = { x: 0, y: 0, w: 1, h: 0.35 };
+    var cropped = run({ colors: 8 });
+    var blueRatio = cropped.codes.filter(function (c) { return /^C/.test(c); }).length / cropped.codes.length;
+    ok('裁剪到上半部分后主要剩蓝青系天空', blueRatio >= 0.5,
+       Math.round(blueRatio * 100) + '% 是 C 系 · ' + cropped.codes.join(' '));
+    ok('裁剪后有效源尺寸变小', APP.state.srcH === Math.round(600 * 0.35),
+       '源高 ' + APP.state.srcH + '（原 600）');
+    APP.opts.crop = null; run({});
+
+    /* ---------- 22d. 熨烫效果与双面预览 ---------- */
+    APP.view.mode = 'preview';
+    var errBefore = errs.length;
+    [0, 1, 2, 3].forEach(function (lv) {
+      APP.view.ironLevel = lv;
+      ['front', 'back'].forEach(function (sd) {
+        APP.view.side = sd;
+        [true, false].forEach(function (both) { APP.view.ironBoth = both; APP.render(); });
+      });
+    });
+    ok('4 档熨烫 × 正反面 × 单双面 全部渲染无报错', errs.length === errBefore,
+       '共 16 种组合');
+    APP.view.ironLevel = 1; APP.view.ironBoth = true;
+
+    // 反面必须是镜像：取一行里最左和最右的色号做对照
+    APP.view.side = 'front';
+    var pvF = APP.renderPreviewCanvas(6);
+    APP.view.side = 'back';
+    var pvB = APP.renderPreviewCanvas(6);
+    function px(cv, gx, gy) {
+      var d = cv.getContext('2d').getImageData(gx * 6 + 3, gy * 6 + 3, 1, 1).data;
+      return d[0] + ',' + d[1] + ',' + d[2];
+    }
+    var rr = APP.state.result;
+    ok('反面预览是左右镜像',
+       px(pvB, 0, 5) === px(pvF, rr.w - 1, 5) && px(pvB, rr.w - 1, 5) === px(pvF, 0, 5),
+       '反面第1列=正面末列 ' + px(pvB, 0, 5) + ' vs ' + px(pvF, rr.w - 1, 5));
+    APP.view.side = 'front'; APP.view.mode = 'chart'; APP.render();
+
+    /* ---------- 22e. 撤销 / 重做 ---------- */
+    var beforeColors = APP.opts.colors;
+    D.getElementById('btnUndo').disabled = false;
+    APP.opts.colors = 7; APP.compute();
+    await sleep(800);                                   // 等防抖记录这一步
+    var undoBtn = D.getElementById('btnUndo');
+    var canUndo = !undoBtn.disabled;
+    undoBtn.click();
+    var undone = await waitFor(function () { return APP.opts.colors !== 7; }, 200);
+    ok('撤销能回到上一步参数', canUndo && undone,
+       '色数 ' + beforeColors + ' → 7 → 撤销后 ' + APP.opts.colors);
+    var redoBtn = D.getElementById('btnRedo');
+    redoBtn.click();
+    var redone = await waitFor(function () { return APP.opts.colors === 7; }, 200);
+    ok('重做能再回到 7 色', redone, '色数 ' + APP.opts.colors);
+
+    // 禁用颜色也要能撤销
+    APP.opts.colors = 16; APP.compute(); await sleep(800);
+    var codeToKill = D.querySelector('#colorList .crow .code').textContent.trim();
+    D.querySelector('#colorList .crow .kill').click();
+    await waitFor(function () {
+      return !APP.state.result.sub.some(function (c) { return c.code === codeToKill; });
+    }, 200);
+    D.getElementById('btnUndo').click();
+    var back = await waitFor(function () {
+      return !(APP.state.disabled[APP.opts.paletteId] || {})[codeToKill];
+    }, 200);
+    ok('禁用颜色后可以撤销回来', back,
+       '禁用 ' + codeToKill + ' 后撤销 → 禁用表 '
+       + JSON.stringify(Object.keys(APP.state.disabled[APP.opts.paletteId] || {})));
+
+    /* ---------- 22f. 高亮可取消 ---------- */
+    APP.state.highlight = 0; APP.renderColorList();
+    ok('高亮时出现「显示全部颜色」按钮', !D.getElementById('btnClearHl').hidden);
+    D.getElementById('btnClearHl').click();
+    ok('点它能恢复显示全部', APP.state.highlight === -1 && D.getElementById('btnClearHl').hidden);
+
+    /* ---------- 22g. 主题 ---------- */
+    var themes = ['purple', 'blue', 'teal', 'rose', 'amber', 'light'];
+    var themeOK = themes.every(function (t) {
+      var b = D.querySelector('#themeDots button[data-t=' + t + ']');
+      if (!b) return false;
+      b.click();
+      return D.documentElement.getAttribute('data-theme') === t && APP.view.theme === t;
+    });
+    ok('6 套主题都能切换并写入 data-theme', themeOK, themes.join(' / '));
+    D.querySelector('#themeDots button[data-t=purple]').click();
+    ok('默认主题是紫色', APP.view.theme === 'purple');
+
+    /* ---------- 22h. 反馈 ---------- */
+    D.getElementById('btnFeedback').click();
+    await sleep(80);
+    var diagTxt = D.getElementById('fbDiag').textContent;
+    var diag = JSON.parse(diagTxt);
+    ok('反馈弹窗打开且环境信息已采集',
+       !D.getElementById('feedbackModal').classList.contains('hidden')
+       && diag['浏览器'] && diag['屏幕'] && diag['窗口'] && diag['时区'] !== undefined,
+       Object.keys(diag).join(' / '));
+    ok('环境信息对用户可见（不是偷偷收集）',
+       diagTxt.length > 100 && !D.getElementById('fbDiagWrap').hidden,
+       '弹窗内展示 ' + diagTxt.length + ' 字符，并有勾选框可取消附带');
+    D.getElementById('fbClose').click();
+
+    /* ---------- 22i. 网格线加粗间距 ---------- */
+    [0, 5, 10].forEach(function (n) {
+      D.querySelector('#boldEvery button[data-n="' + n + '"]').click();
+      ok('加粗间隔切到 ' + (n || '不加粗'), APP.view.boldEvery === n);
+    });
+    D.querySelector('#boldEvery button[data-n="10"]').click();
+
     /* ---------- 23. 响应式：任何宽度都不该出现横向溢出 ---------- */
-    var WIDTHS = [380, 420, 560, 860, 1024];
+    var WIDTHS = [360, 390, 430, 560, 860, 1024];
     for (var wi = 0; wi < WIDTHS.length; wi++) {
       var vw = WIDTHS[wi];
       var rf = document.createElement('iframe');
@@ -448,16 +585,19 @@
       var over = scrollW - vw;
       // 找右边缘越界的元素时要跳过 .scroller —— 图纸画布本来就靠它裁剪，
       // getBoundingClientRect 不受祖先裁剪影响，否则会误报。
-      var worst = 0, culprit = '';
-      [].forEach.call(FD.querySelectorAll('.panel *, .topbar *'), function (el) {
+      var offenders = [];
+      [].forEach.call(FD.querySelectorAll('.panel *, .topbar *, .site-foot *'), function (el) {
         var r2 = el.getBoundingClientRect();
-        if (r2.width > 0 && r2.right > worst) {
-          worst = r2.right;
-          culprit = (el.tagName + '.' + (el.className || '')).slice(0, 40);
+        if (r2.width > 0 && r2.right > vw + 0.5) {
+          offenders.push((el.tagName + (el.id ? '#' + el.id : '.' + (el.className || '')))
+            .slice(0, 28) + '→' + Math.round(r2.right));
         }
       });
+      offenders.sort();
+      var worst = offenders.length ? vw + 1 : 0;
+      var culprit = offenders.length ? offenders.slice(0, 4).join(' , ') + (offenders.length > 4 ? ' …共' + offenders.length + '个' : '') : '无';
       ok('宽度 ' + vw + 'px 时无横向溢出', over <= 1 && worst <= vw + 1,
-         'scrollWidth ' + scrollW + ' / 面板内最右元素 ' + culprit + ' @' + Math.round(worst) + 'px');
+         'scrollWidth ' + scrollW + ' / 超出视口的元素：' + culprit);
 
       // 窄屏最容易出问题的是「标签+滑块+数值框」这类行，数值框不能被挤出面板
       var panelR = FD.querySelector('.panel.left').getBoundingClientRect().right;
