@@ -105,9 +105,96 @@
     return out;
   }
 
+  /**
+   * 边缘保留降采样：块内做一次 2-means。
+   *
+   * 只有当两簇势均力敌（少数派占比 ≥ MINOR_MIN）时才判定「有一条边穿过这个格子」，
+   * 此时取多数派的均值，边缘就不会被平均成中间色。
+   *
+   * 反过来，如果少数派只占一点点（比豆子还细的线、噪点），
+   * 胜者通吃会把它整个抹掉——那比平均更糟。这种情况退回普通平均，
+   * 至少还能靠明暗变化透出这条线。
+   */
+  var MINOR_MIN = 0.25;      // 少数派低于这个占比就不算「边」
+  function downEdge(src, sw, sh, tw, th) {
+    var out = new Float32Array(tw * th * 4);
+    var xr = sw / tw, yr = sh / th;
+    var buf = new Float32Array(16 * 16 * 3);       // 块内像素缓存（k 最大 12）
+    for (var ty = 0; ty < th; ty++) {
+      var y0 = Math.floor(ty * yr);
+      var y1 = Math.min(sh, Math.max(y0 + 1, Math.ceil((ty + 1) * yr)));
+      for (var tx = 0; tx < tw; tx++) {
+        var x0 = Math.floor(tx * xr);
+        var x1 = Math.min(sw, Math.max(x0 + 1, Math.ceil((tx + 1) * xr)));
+        var n = 0, aSum = 0, cnt = 0;
+        var mr = 0, mg = 0, mb = 0;
+        for (var y = y0; y < y1; y++) {
+          var row = y * sw;
+          for (var x = x0; x < x1; x++) {
+            var i = (row + x) << 2;
+            var al = src[i + 3] / 255;
+            aSum += al; cnt++;
+            if (al < 0.03) continue;
+            if (n < 256) {
+              buf[n * 3] = src[i]; buf[n * 3 + 1] = src[i + 1]; buf[n * 3 + 2] = src[i + 2];
+              mr += src[i]; mg += src[i + 1]; mb += src[i + 2];
+              n++;
+            }
+          }
+        }
+        var o = (ty * tw + tx) << 2;
+        out[o + 3] = cnt ? (aSum / cnt) * 255 : 0;
+        if (n === 0) continue;
+        mr /= n; mg /= n; mb /= n;
+
+        // 找块内离均值最远的两个点当初始中心
+        var f1 = 0, bd = -1, d, j;
+        for (j = 0; j < n; j++) {
+          d = (buf[j*3]-mr)*(buf[j*3]-mr) + (buf[j*3+1]-mg)*(buf[j*3+1]-mg) + (buf[j*3+2]-mb)*(buf[j*3+2]-mb);
+          if (d > bd) { bd = d; f1 = j; }
+        }
+        if (bd < 48) {                              // 块内基本同色，直接用均值
+          out[o] = mr; out[o + 1] = mg; out[o + 2] = mb;
+          continue;
+        }
+        var f2 = 0; bd = -1;
+        for (j = 0; j < n; j++) {
+          d = (buf[j*3]-buf[f1*3])*(buf[j*3]-buf[f1*3])
+            + (buf[j*3+1]-buf[f1*3+1])*(buf[j*3+1]-buf[f1*3+1])
+            + (buf[j*3+2]-buf[f1*3+2])*(buf[j*3+2]-buf[f1*3+2]);
+          if (d > bd) { bd = d; f2 = j; }
+        }
+        var c1r = buf[f1*3], c1g = buf[f1*3+1], c1b = buf[f1*3+2];
+        var c2r = buf[f2*3], c2g = buf[f2*3+1], c2b = buf[f2*3+2];
+        var s1r, s1g, s1b, n1, s2r, s2g, s2b, n2;
+        for (var it = 0; it < 6; it++) {
+          s1r = s1g = s1b = n1 = 0; s2r = s2g = s2b = n2 = 0;
+          for (j = 0; j < n; j++) {
+            var r0 = buf[j*3], g0 = buf[j*3+1], b0 = buf[j*3+2];
+            var d1 = (r0-c1r)*(r0-c1r) + (g0-c1g)*(g0-c1g) + (b0-c1b)*(b0-c1b);
+            var d2 = (r0-c2r)*(r0-c2r) + (g0-c2g)*(g0-c2g) + (b0-c2b)*(b0-c2b);
+            if (d1 <= d2) { s1r += r0; s1g += g0; s1b += b0; n1++; }
+            else { s2r += r0; s2g += g0; s2b += b0; n2++; }
+          }
+          if (n1) { c1r = s1r/n1; c1g = s1g/n1; c1b = s1b/n1; }
+          if (n2) { c2r = s2r/n2; c2g = s2g/n2; c2b = s2b/n2; }
+        }
+        var minor = Math.min(n1, n2) / n;
+        if (minor >= MINOR_MIN) {                   // 真·边缘：多数派胜出，边界保持锐利
+          if (n1 >= n2) { out[o] = c1r; out[o+1] = c1g; out[o+2] = c1b; }
+          else { out[o] = c2r; out[o+1] = c2g; out[o+2] = c2b; }
+        } else {                                    // 细线/噪点：通吃会抹掉它，退回平均
+          out[o] = mr; out[o + 1] = mg; out[o + 2] = mb;
+        }
+      }
+    }
+    return out;
+  }
+
   Q.downsample = function (src, sw, sh, tw, th, mode) {
     if (mode === 'nearest') return downNearest(src, sw, sh, tw, th);
     if (mode === 'dominant') return downDominant(src, sw, sh, tw, th);
+    if (mode === 'edge') return downEdge(src, sw, sh, tw, th);
     return downArea(src, sw, sh, tw, th);
   };
 
@@ -220,6 +307,29 @@
     return { lab: lab, n: n, opaque: idxs.length };
   }
   Q.collectLab = collectLab;
+
+  /* ----------------------------------------------------------
+   * 关于「更能保留细节的量化算法」——试过，结论是不需要，记下来免得重复走弯路。
+   *
+   * 在 600×400 的测试图（大片渐变 + 七根鲜艳色条）上用 12 色量化：
+   *   普通 K-Means           平均 ΔE2000 = 3.87，最差 6.88
+   *   理论下限（每种颜色都
+   *   在 221 色卡里挑最近的，
+   *   不限色号预算）          平均 ΔE2000 = 3.00，最差 4.44
+   *
+   * 也就是说 K-Means 已经贴着色卡的物理极限了，残余误差主要来自
+   * **色卡里根本没有那个颜色**，换聚类算法救不回来。
+   *
+   * 三种尝试都实测更差，别再试：
+   *   1. 按局部对比度加权采样 —— 平滑渐变处处有小对比度、纯色块内部为零，
+   *      预算全跑去渐变和边缘，而边缘恰恰是不想要的中间色；
+   *   2. 按颜色箱等权投票 —— 大渐变横跨的箱子数远多于小色块，还是它赢；
+   *   3. K-Means 后「合并最近的一对中心、把空出的中心放到误差最大处」——
+   *      误差最大的往往是边界上的中间色，抢救它等于浪费一个色号（最差 ΔE 6.88 → 13.82）。
+   *
+   * 真正能提升细节的是别处：提高格数（比豆子还细的特征只能靠分辨率）、
+   * 边缘保留采样（见 downEdge）、以及抖动。
+   * ---------------------------------------------------------- */
 
   /** K-Means（Lab 空间，k-means++ 初始化，确定性） */
   Q.kmeans = function (lab, n, k, maxIter, seed) {

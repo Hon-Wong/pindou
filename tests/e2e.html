@@ -155,7 +155,7 @@
     });
 
     /* ---------- 5. 采样方式 ---------- */
-    ['area', 'nearest', 'dominant'].forEach(function (m) {
+    ['area', 'edge', 'nearest', 'dominant'].forEach(function (m) {
       var r = run({ dither: 'none', colors: 16, sampleMode: m });
       ok('采样 ' + m, r && r.total === 64 * 48, r.colors + ' 色');
     });
@@ -430,6 +430,79 @@
     ok('200 格宽能正常出图', big, APP.summary() ? APP.summary().w + '×' + APP.summary().h
        + ' · ' + APP.summary().total + ' 颗' : '没出图');
 
+    /* ---------- 22b-2. 细节保留：算法与采样 ---------- */
+    await loadImg('fixtures/detail_test.png', 'detail_test.png');
+    APP.opts.lockAspect = false; APP.opts.gridW = 60; APP.opts.gridH = 40;
+    APP.opts.rotate = 0; APP.opts.flipH = false; APP.opts.flipV = false; APP.opts.crop = null;
+
+    // 细节区在右侧约 68% 之后；统计该区域用到多少种不同色号
+    // 量化质量的回归防线：K-Means 的结果应当贴近「色卡理论下限」。
+    // 下限 = 不限色号预算时，每种真实颜色在 221 色卡里能找到的最佳匹配。
+    // 这条测试保证以后有人改量化算法时不会悄悄退化。
+    var BAR_RGB = [[230,25,35],[255,205,0],[0,165,80],[0,90,220],[235,0,140],[255,255,255],[15,15,15]];
+    function theoreticalFloor() {
+      var pal = W.PD.palettes.get(APP.opts.paletteId).colors, tot = 0, mx = 0;
+      BAR_RGB.forEach(function (rgb) {
+        var l = W.PD.color.rgbToLab(rgb[0], rgb[1], rgb[2], [0,0,0]);
+        var bd = 1e9;
+        for (var j = 0; j < pal.length; j++) {
+          var d = W.PD.color.deltaE2000(l[0],l[1],l[2], pal[j].lab[0],pal[j].lab[1],pal[j].lab[2]);
+          if (d < bd) bd = d;
+        }
+        tot += bd; if (bd > mx) mx = bd;
+      });
+      return [+(tot / BAR_RGB.length).toFixed(2), +mx.toFixed(2)];
+    }
+    function barFidelity() {
+      var r2 = APP.state.result, tot = 0, cnt2 = 0, mx = 0;
+      for (var bi = 0; bi < BAR_RGB.length; bi++) {
+        var gx = Math.min(r2.w - 1, Math.round((360 + bi * 34 + 17) / 600 * r2.w));
+        var gy = Math.round(r2.h * 0.25);
+        var i2 = r2.idx[gy * r2.w + gx];
+        if (i2 < 0) continue;
+        var got = r2.sub[i2].rgb, want = BAR_RGB[bi];
+        var l1 = W.PD.color.rgbToLab(got[0], got[1], got[2], [0,0,0]);
+        var l2 = W.PD.color.rgbToLab(want[0], want[1], want[2], [0,0,0]);
+        var de = W.PD.color.deltaE2000(l1[0], l1[1], l1[2], l2[0], l2[1], l2[2]);
+        tot += de; if (de > mx) mx = de;
+        cnt2++;
+      }
+      return [cnt2 ? +(tot / cnt2).toFixed(2) : 999, +mx.toFixed(2)];
+    }
+    run({ colors: 12, algo: 'kmeans', dither: 'none', sampleMode: 'area',
+          mosaic: 1, blur: 0, sharpen: 0, fitMode: 'cover',
+          brightness: 0, contrast: 0, saturation: 0, gamma: 100, bgRemove: false });
+    var floorE = theoreticalFloor(), gotE = barFidelity();
+    ok('K-Means 用 12 色就贴近色卡理论下限（平均 ΔE 差距 < 1.5）',
+       gotE[0] - floorE[0] < 1.5,
+       '平均 ΔE2000：实测 ' + gotE[0] + ' vs 理论下限 ' + floorE[0]
+       + '（下限=不限色号预算时 221 色卡能达到的最好水平）');
+    ok('最差色也没有离谱（与下限差距 < 4）', gotE[1] - floorE[1] < 4,
+       '最差 ΔE2000：实测 ' + gotE[1] + ' vs 理论下限 ' + floorE[1]);
+
+    // 七根纯色条本该只用 7 种色号；面积平均会在每条边界上生出中间色，
+    // 数一数色条区实际用了多少种色号，就知道有多少「和稀泥」出来的颜色
+    function colorsInBars() {
+      var r2 = APP.state.result, seen = {};
+      var y1 = Math.floor(r2.h * 0.48);
+      for (var y = 1; y < y1; y++) {
+        for (var x = Math.floor(r2.w * 0.62); x < r2.w; x++) {
+          var i2 = r2.idx[y * r2.w + x];
+          if (i2 >= 0) seen[r2.sub[i2].code] = 1;
+        }
+      }
+      return Object.keys(seen).length;
+    }
+    run({ algo: 'kmeans', sampleMode: 'area', colors: 40 });
+    var nArea = colorsInBars();
+    run({ sampleMode: 'edge' });
+    var nEdge = colorsInBars();
+    ok('「边缘保留」采样减少边界上的中间色', nEdge < nArea,
+       '七根纯色条区域用到的色号数：面积平均 ' + nArea + ' → 边缘保留 ' + nEdge + '（理想 7）');
+    run({ colors: 12 });
+    ok('边缘保留采样结果完整', APP.summary().total === 60 * 40, APP.summary().total + ' 颗');
+    run({ sampleMode: 'area', algo: 'kmeans' });
+
     /* ---------- 22c. 旋转 / 翻转 / 裁剪 ---------- */
     await loadImg('fixtures/photo_landscape.png', 'photo_landscape.png');
     APP.state.img.dataset && 0;
@@ -540,6 +613,56 @@
        '豆子 (' + (beadCell || []).join(',') + ') 标准 ' + (beadCell ? pixAt(p1, beadCell[0], beadCell[1]) : '?')
        + ' → 毛巾 ' + (beadCell ? pixAt(p2, beadCell[0], beadCell[1]) : '?'));
 
+    // 全熔必须看不出一颗颗豆子：相邻同色区内部的像素差异应该显著变小
+    APP.view.finish = 'paper';
+    function beadContrast(lv) {
+      APP.view.ironLevel = lv;
+      var cv = APP.renderPreviewCanvas(16);
+      var g = cv.getContext('2d');
+      // 在一片纯色区域里横向扫一行，统计相邻像素的最大跳变
+      var rr2 = APP.state.result;
+      var row = Math.floor(rr2.h * 0.85);          // 草地：大片同色
+      var d = g.getImageData(0, row * 16 + 8, cv.width, 1).data;
+      var mx = 0;
+      for (var x = 16; x < cv.width - 16; x++) {
+        var a = (x - 1) * 4, b = x * 4;
+        var diff = Math.abs(d[a] - d[b]) + Math.abs(d[a + 1] - d[b + 1]) + Math.abs(d[a + 2] - d[b + 2]);
+        if (diff > mx) mx = diff;
+      }
+      return mx;
+    }
+    var cRaw = beadContrast(0), cLight = beadContrast(1), cFull = beadContrast(3);
+    ok('生豆能看出一颗颗圆柱（同色区内跳变明显）', cRaw > 40, '最大跳变 ' + cRaw);
+    ok('全熔后颗粒边界基本消失（跳变远小于生豆）', cFull < cRaw * 0.5,
+       '生豆 ' + cRaw + ' → 轻烫 ' + cLight + ' → 全熔 ' + cFull);
+    ok('颗粒感随熨烫程度单调递减', cRaw >= cLight && cLight >= cFull,
+       cRaw + ' ≥ ' + cLight + ' ≥ ' + cFull);
+    APP.view.ironLevel = 1;
+
+    // 纹理必须跟着网格一起滚动：同一个格子在不同滚动位置下应该长得一样
+    APP.view.mode = 'preview'; APP.view.finish = 'glitter'; APP.view.cell = 24;
+    APP.layout();
+    var sc = D.getElementById('scroller');
+    function cellPixels(gx, gy) {
+      var mc = D.getElementById('mainCanvas');
+      var dpr = Math.min(2, W.devicePixelRatio || 1);
+      var px2 = Math.round((APP.state.offX - sc.scrollLeft + gx * APP.view.cell + APP.view.cell / 2) * dpr);
+      var py2 = Math.round((APP.state.offY - sc.scrollTop + gy * APP.view.cell + APP.view.cell / 2) * dpr);
+      if (px2 < 2 || py2 < 2 || px2 > mc.width - 2 || py2 > mc.height - 2) return null;
+      var d = mc.getContext('2d').getImageData(px2 - 3, py2 - 3, 7, 7).data;
+      return Array.prototype.join.call(d, ',');
+    }
+    sc.scrollLeft = 0; sc.scrollTop = 0; APP.render();
+    var beforeScroll = cellPixels(12, 8);
+    sc.scrollLeft = 37; sc.scrollTop = 23; APP.render();
+    var afterScroll = cellPixels(12, 8);
+    ok('闪粉等纹理跟着画布一起滚动（不会钉在屏幕上）',
+       beforeScroll && afterScroll && beforeScroll === afterScroll,
+       beforeScroll === afterScroll ? '滚动 37/23px 后同一格像素完全一致'
+         : '同一格在滚动前后不一致 —— 纹理没跟着走');
+    sc.scrollLeft = 0; sc.scrollTop = 0;
+    APP.view.finish = 'paper'; APP.view.mode = 'chart'; APP.render();
+
     // 闪粉四种颜色
     APP.view.finish = 'glitter';
     var tintPix = {};
@@ -623,6 +746,28 @@
       ok('加粗间隔切到 ' + (n || '不加粗'), APP.view.boldEvery === n);
     });
     D.querySelector('#boldEvery button[data-n="10"]').click();
+
+    // 关掉网格线，图纸上不该再剩任何线（含加粗线和外边框）
+    APP.view.showGrid = true; APP.view.boldEvery = 10; APP.view.mode = 'chart';
+    APP.view.labelMode = 'none';
+    var withGrid = APP.renderChartCanvas({ cell: 12, legend: false });
+    APP.view.showGrid = false;
+    var noGrid = APP.renderChartCanvas({ cell: 12, legend: false });
+    function countGrayLines(cv) {
+      // 数一数有多少像素是网格线的灰色（#c9ccd2 / #6b7280）
+      var g = cv.getContext('2d');
+      var d = g.getImageData(0, 0, cv.width, cv.height).data, n = 0;
+      for (var i = 0; i < d.length; i += 4) {
+        if ((Math.abs(d[i] - 201) < 6 && Math.abs(d[i + 1] - 204) < 6 && Math.abs(d[i + 2] - 210) < 6) ||
+            (Math.abs(d[i] - 107) < 6 && Math.abs(d[i + 1] - 114) < 6 && Math.abs(d[i + 2] - 128) < 6)) n++;
+      }
+      return n;
+    }
+    var gWith = countGrayLines(withGrid), gNo = countGrayLines(noGrid);
+    ok('关掉网格线后，加粗线与外边框一并消失', gNo < gWith * 0.02,
+       '网格线像素 ' + gWith + ' → ' + gNo);
+    APP.view.showGrid = true; APP.view.labelMode = 'code';
+    D.getElementById('showGrid').checked = true;
 
     /* ---------- 23. 响应式：任何宽度都不该出现横向溢出 ---------- */
     var WIDTHS = [360, 390, 430, 560, 860, 1024];

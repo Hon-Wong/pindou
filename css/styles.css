@@ -442,3 +442,7 @@ details.sub>*:not(summary){margin-top:8px}
   .topbar{flex-wrap:wrap;gap:8px}
   .stats{grid-template-columns:1fr}
 }
+
+/* 关掉网格线后，加粗间隔就没意义了，置灰 */
+.seg.disabled{opacity:.4}
+.seg button:disabled{cursor:not-allowed}

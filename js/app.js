@@ -629,7 +629,9 @@
     var hl = state.highlight;
     // 有表面工艺时，豆子先画到独立图层，贴完纹理（source-atop）再合成，
     // 这样纹理只落在豆子上，不会糊到空格和底板
-    var useLayer = view.mode === 'preview' && FINISH[view.finish] && FINISH[view.finish].tex;
+    var ironP = IRON[effIronLevel()] || IRON[1];
+    var useLayer = view.mode === 'preview'
+      && (ironP.blur > 0 || ironP.sheet > 0 || (FINISH[view.finish] && FINISH[view.finish].tex));
     var g = ctx;
     if (useLayer) {
       if (layerCv.width !== dom.mainCanvas.width || layerCv.height !== dom.mainCanvas.height) {
@@ -684,7 +686,8 @@
     }
 
     if (useLayer) {
-      applyFinish(g, cw, ch, cell, ox, oy);
+      fuseLayer(g, layerCv, cw, ch, cell, effIronLevel());
+      applyFinish(g, layerCv, cw, ch, cell, ox, oy);
       ctx.drawImage(layerCv, 0, 0, cw, ch);
     }
 
@@ -705,7 +708,8 @@
       }
       ctx.stroke();
     }
-    if (view.boldEvery && cell >= 4) {
+    // 加粗线和外框都归「显示网格线」这个总开关管：关掉就该一条不剩
+    if (view.showGrid && view.boldEvery && cell >= 4) {
       ctx.lineWidth = 1.6;
       ctx.strokeStyle = th.bold;
       ctx.beginPath();
@@ -908,44 +912,72 @@
     return pat;
   }
 
+  // 各纹理该用的混合模式：闪粉要叠加发光，绒面要压暗，亮面要提亮
   var BLEND = {
     towel: 'overlay', loofah: 'overlay', mesh: 'overlay', waffle: 'overlay',
     crumpled: 'overlay', velvet: 'multiply', gloss: 'screen', glitter: 'lighter'
   };
+  var TEX_ALPHA = { glitter: 0.9, gloss: 0.95 };
 
+  var maskCv = document.createElement('canvas');
   /**
-   * 把表面工艺叠加到「只有豆子的图层」上。
-   * 用 source-atop，纹理不会糊到空格和板面上。
+   * 把表面工艺叠到「只画了豆子」的图层上。
+   *
+   * 两点关键：
+   * 1) 纹理原点跟着网格走（translate(ox, oy)），否则拖动画布时纹理会钉在屏幕上不动。
+   * 2) Canvas2D 没法同时用混合模式和 source-atop，所以先备份豆子图层的 alpha 当蒙版，
+   *    按混合模式铺完纹理后再用 destination-in 裁一次，纹理才不会糊到空格和底板上。
    */
-  function applyFinish(ctx, w, h, cell, ox, oy) {
+  function applyFinish(g, layer, cssW, cssH, cell, ox, oy) {
     var f = FINISH[view.finish];
     if (!f || !f.tex) return;
-    var pat = finishPattern(ctx, f.tex, cell);
-    ctx.save();
-    ctx.globalCompositeOperation = 'source-atop';
-    if (BLEND[f.tex] && BLEND[f.tex] !== 'source-atop') {
-      // 先按混合模式画一层，再用 source-atop 裁掉空白处
-      ctx.globalCompositeOperation = 'source-atop';
+
+    if (maskCv.width !== layer.width || maskCv.height !== layer.height) {
+      maskCv.width = layer.width; maskCv.height = layer.height;
     }
-    ctx.globalAlpha = f.tex === 'glitter' ? 0.85 : 1;
-    ctx.translate(ox % 1, oy % 1);
-    ctx.fillStyle = pat;
-    ctx.fillRect(-2, -2, w + 4, h + 4);
-    ctx.restore();
+    var m = maskCv.getContext('2d');
+    m.setTransform(1, 0, 0, 1, 0, 0);
+    m.clearRect(0, 0, layer.width, layer.height);
+    m.drawImage(layer, 0, 0);
+
+    var pat = finishPattern(g, f.tex, cell);
+    g.save();
+    g.globalCompositeOperation = BLEND[f.tex] || 'source-over';
+    g.globalAlpha = TEX_ALPHA[f.tex] == null ? 1 : TEX_ALPHA[f.tex];
+    g.translate(ox, oy);                       // ← 纹理跟着网格一起滚动
+    g.fillStyle = pat;
+    g.fillRect(-ox - 2, -oy - 2, cssW + 4, cssH + 4);
+    g.restore();
+
+    g.save();
+    g.setTransform(1, 0, 0, 1, 0, 0);
+    g.globalCompositeOperation = 'destination-in';
+    g.drawImage(maskCv, 0, 0);
+    g.restore();
   }
 
   /**
-   * 熨烫程度对应的外观参数（示意，参考常见教程里的三档手感）：
-   *   0 生豆   —— 圆环状，孔大，颗粒之间留缝
-   *   1 轻烫   —— 标准做法，边缘刚熔合，孔仍清晰可见
-   *   2 中烫   —— 缝隙合上、孔缩小，圆角方块，开始有光泽
-   *   3 重烫   —— 全熔封孔，接近平整方块，光泽最强
+   * 熨烫程度对应的外观参数。
+   *
+   * 关键在于「颗粒感随熨烫程度递减」：
+   *   0 生豆 —— 一颗颗独立的圆柱，能看到侧壁和颗粒之间的缝
+   *   1 轻烫 —— 外缘熔合、中心留孔（标准做法），边界仍清晰
+   *   2 中烫 —— 半熔，边界变软、孔缩小，开始方形化
+   *   3 重烫 —— 全熔，孔封死、**颗粒边界基本消失**，成为一整片光亮的塑料板
+   *
+   * 所以 3 档不再画单颗高光、描边和孔——此时相邻方块本来就严丝合缝地连成一片。
+   * 模糊只用来做轻微的边界渗色（真实全熔的颜色分区仍然清晰，糊过头就失真了），
+   * 再加一道贯穿整片的镜面光带。
+   *
+   * 字段：fill 占格比例 / round 圆角 / hole 孔径 / gloss 单颗高光 /
+   *      edge 颗粒描边 / wall 圆柱侧壁暗部 / blur 熔合模糊(按格子比例) /
+   *      sheet 整片镜面光强度
    */
   var IRON = [
-    { fill: 0.90, round: 0.50, hole: 0.19, gloss: 0.10, edge: 0.16 },
-    { fill: 0.96, round: 0.44, hole: 0.155, gloss: 0.14, edge: 0.13 },
-    { fill: 1.00, round: 0.30, hole: 0.085, gloss: 0.20, edge: 0.09 },
-    { fill: 1.00, round: 0.14, hole: 0,     gloss: 0.30, edge: 0.05 }
+    { fill: 0.86, round: 0.50, hole: 0.200, gloss: 0.13, edge: 0.22, wall: 0.34, blur: 0,    sheet: 0    },
+    { fill: 1.00, round: 0.42, hole: 0.160, gloss: 0.16, edge: 0.14, wall: 0.12, blur: 0,    sheet: 0    },
+    { fill: 1.00, round: 0.22, hole: 0.075, gloss: 0.18, edge: 0.06, wall: 0,    blur: 0.03, sheet: 0.07 },
+    { fill: 1.00, round: 0.02, hole: 0,     gloss: 0,    edge: 0,    wall: 0,    blur: 0.07, sheet: 0.18 }
   ];
 
   function roundRect(ctx, x, y, w, h, r) {
@@ -959,6 +991,12 @@
     ctx.closePath();
   }
 
+  /** 把颜色压暗，用来画圆柱侧壁 */
+  function shade(hex, k) {
+    var c = C.hexToRgb(hex) || [0, 0, 0];
+    return C.rgbToHex(c[0] * k, c[1] * k, c[2] * k);
+  }
+
   function drawBead(ctx, px, py, cell, hex, dim, lvl) {
     var p = IRON[lvl == null ? view.ironLevel : lvl] || IRON[1];
     var cx = px + cell / 2, cy = py + cell / 2;
@@ -966,37 +1004,96 @@
     if (dim) ctx.globalAlpha = 0.25;
 
     var size = cell * p.fill, off = (cell - size) / 2;
-    ctx.fillStyle = hex;
-    if (view.beadShape === 'square' || p.round < 0.2) {
-      roundRect(ctx, px + off, py + off, size, size, size * p.round);
-      ctx.fill();
-    } else if (p.round >= 0.48) {
-      ctx.beginPath(); ctx.arc(cx, cy, size / 2, 0, Math.PI * 2); ctx.fill();
-    } else {
-      roundRect(ctx, px + off, py + off, size, size, size * p.round);
-      ctx.fill();
+    var isRound = p.round >= 0.48;
+
+    // 圆柱侧壁：生豆状态下沿底部露出一圈暗色，才看得出是「立着的柱子」而不是平面圆点
+    if (p.wall > 0 && cell >= 7) {
+      ctx.fillStyle = shade(hex, 1 - p.wall);
+      if (isRound) {
+        ctx.beginPath();
+        ctx.arc(cx, cy + size * 0.10, size / 2, 0, Math.PI * 2);
+        ctx.fill();
+      } else {
+        roundRect(ctx, px + off, py + off + size * 0.08, size, size, size * p.round);
+        ctx.fill();
+      }
     }
 
+    ctx.fillStyle = hex;
+    if (isRound) { ctx.beginPath(); ctx.arc(cx, cy, size / 2, 0, Math.PI * 2); ctx.fill(); }
+    else { roundRect(ctx, px + off, py + off, size, size, size * p.round); ctx.fill(); }
+
     if (cell >= 6) {
-      if (p.hole > 0) {                                   // 孔
-        ctx.beginPath(); ctx.arc(cx, cy, cell * p.hole, 0, Math.PI * 2);
-        ctx.fillStyle = 'rgba(0,0,0,' + p.edge * 2 + ')'; ctx.fill();
+      if (p.hole > 0) {
+        var hr = cell * p.hole;
+        ctx.beginPath(); ctx.arc(cx, cy, hr, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(0,0,0,' + (0.28 + p.wall * 0.4).toFixed(3) + ')'; ctx.fill();
+        // 孔内壁高光，进一步强化「这是个通孔」
+        if (p.wall > 0) {
+          ctx.beginPath();
+          ctx.arc(cx, cy - hr * 0.25, hr * 0.72, Math.PI * 0.15, Math.PI * 0.85);
+          ctx.strokeStyle = 'rgba(255,255,255,.16)';
+          ctx.lineWidth = Math.max(0.6, cell * 0.025);
+          ctx.stroke();
+        }
       }
       var gm = (FINISH[view.finish] || FINISH.paper).gloss;
-      if (p.gloss * gm > 0.01) {                          // 高光（受表面工艺影响）
+      if (p.gloss * gm > 0.01) {
         ctx.beginPath();
         ctx.arc(cx - size * 0.16, cy - size * 0.18, size * (p.hole > 0 ? 0.26 : 0.34), 0, Math.PI * 2);
         ctx.fillStyle = 'rgba(255,255,255,' + Math.min(0.6, p.gloss * gm).toFixed(3) + ')';
         ctx.fill();
       }
-      if (p.edge > 0.06) {                                // 颗粒描边，强化未熔感
-        ctx.strokeStyle = 'rgba(0,0,0,' + p.edge * 0.6 + ')';
+      if (p.edge > 0.04) {                      // 颗粒描边：熔得越透越淡，全熔时完全没有
+        ctx.strokeStyle = 'rgba(0,0,0,' + (p.edge * 0.7).toFixed(3) + ')';
         ctx.lineWidth = Math.max(0.5, cell * 0.03);
-        if (p.round >= 0.48) { ctx.beginPath(); ctx.arc(cx, cy, size / 2, 0, Math.PI * 2); ctx.stroke(); }
+        if (isRound) { ctx.beginPath(); ctx.arc(cx, cy, size / 2, 0, Math.PI * 2); ctx.stroke(); }
         else { roundRect(ctx, px + off, py + off, size, size, size * p.round); ctx.stroke(); }
       }
     }
     ctx.restore();
+  }
+
+  /**
+   * 熔合后处理：整层做一次模糊，让相邻颗粒的颜色在边界混合，
+   * 颗粒边界随之消失——这正是全熔成品「看不出一颗颗豆子」的原因。
+   * 再叠一道贯穿整片的镜面光带。
+   */
+  var blurCv = document.createElement('canvas');
+  function fuseLayer(g, layer, cssW, cssH, cell, lvl) {
+    var p = IRON[lvl] || IRON[1];
+    if (p.blur > 0) {
+      var rad = Math.max(0.6, cell * p.blur);
+      if (blurCv.width !== layer.width || blurCv.height !== layer.height) {
+        blurCv.width = layer.width; blurCv.height = layer.height;
+      }
+      var b = blurCv.getContext('2d');
+      b.setTransform(1, 0, 0, 1, 0, 0);
+      b.clearRect(0, 0, layer.width, layer.height);
+      b.drawImage(layer, 0, 0);
+
+      var scale = layer.width / Math.max(1, cssW);   // 换算到设备像素
+      g.save();
+      g.setTransform(1, 0, 0, 1, 0, 0);
+      g.clearRect(0, 0, layer.width, layer.height);
+      g.filter = 'blur(' + (rad * scale).toFixed(2) + 'px)';
+      g.drawImage(blurCv, 0, 0);
+      g.filter = 'none';
+      g.restore();
+    }
+    if (p.sheet > 0) {
+      g.save();
+      g.globalCompositeOperation = 'source-atop';
+      var lg = g.createLinearGradient(0, 0, cssW, cssH);
+      lg.addColorStop(0.00, 'rgba(255,255,255,' + (p.sheet * 1.1).toFixed(3) + ')');
+      lg.addColorStop(0.30, 'rgba(255,255,255,0)');
+      lg.addColorStop(0.52, 'rgba(255,255,255,' + (p.sheet * 1.5).toFixed(3) + ')');
+      lg.addColorStop(0.62, 'rgba(255,255,255,0)');
+      lg.addColorStop(1.00, 'rgba(0,0,0,' + (p.sheet * 0.5).toFixed(3) + ')');
+      g.fillStyle = lg;
+      g.fillRect(0, 0, cssW, cssH);
+      g.restore();
+    }
   }
 
   /** 反面看到的是镜像；单面熨烫时反面仍是生豆的样子 */
@@ -1245,16 +1342,20 @@
     }
 
     // 网格线
-    ctx.lineWidth = 1; ctx.strokeStyle = '#c9ccd2'; ctx.beginPath();
-    for (x = 0; x <= r.w; x++) { ctx.moveTo(ox + x * cell + 0.5, oy); ctx.lineTo(ox + x * cell + 0.5, oy + r.h * cell); }
-    for (y = 0; y <= r.h; y++) { ctx.moveTo(ox, oy + y * cell + 0.5); ctx.lineTo(ox + r.w * cell, oy + y * cell + 0.5); }
-    ctx.stroke();
-    var be = view.boldEvery || 10;
-    ctx.lineWidth = 2; ctx.strokeStyle = '#6b7280'; ctx.beginPath();
-    for (x = 0; x <= r.w; x += be) { ctx.moveTo(ox + x * cell + 0.5, oy); ctx.lineTo(ox + x * cell + 0.5, oy + r.h * cell); }
-    for (y = 0; y <= r.h; y += be) { ctx.moveTo(ox, oy + y * cell + 0.5); ctx.lineTo(ox + r.w * cell, oy + y * cell + 0.5); }
-    ctx.stroke();
-    ctx.strokeRect(ox + 0.5, oy + 0.5, r.w * cell, r.h * cell);
+    if (view.showGrid) {
+      ctx.lineWidth = 1; ctx.strokeStyle = '#c9ccd2'; ctx.beginPath();
+      for (x = 0; x <= r.w; x++) { ctx.moveTo(ox + x * cell + 0.5, oy); ctx.lineTo(ox + x * cell + 0.5, oy + r.h * cell); }
+      for (y = 0; y <= r.h; y++) { ctx.moveTo(ox, oy + y * cell + 0.5); ctx.lineTo(ox + r.w * cell, oy + y * cell + 0.5); }
+      ctx.stroke();
+      if (view.boldEvery) {
+        var be = view.boldEvery;
+        ctx.lineWidth = 2; ctx.strokeStyle = '#6b7280'; ctx.beginPath();
+        for (x = 0; x <= r.w; x += be) { ctx.moveTo(ox + x * cell + 0.5, oy); ctx.lineTo(ox + x * cell + 0.5, oy + r.h * cell); }
+        for (y = 0; y <= r.h; y += be) { ctx.moveTo(ox, oy + y * cell + 0.5); ctx.lineTo(ox + r.w * cell, oy + y * cell + 0.5); }
+        ctx.stroke();
+      }
+      ctx.strokeRect(ox + 0.5, oy + 0.5, r.w * cell, r.h * cell);
+    }
 
     // 图例
     if (withLegend) {
@@ -1298,7 +1399,9 @@
     ctx.fillStyle = '#e6e7ea'; ctx.fillRect(0, 0, cv.width, cv.height);
 
     var f = FINISH[view.finish];
-    var lay = (f && f.tex) ? document.createElement('canvas') : null;
+    var ip = IRON[effIronLevel()] || IRON[1];
+    var needLay = (f && f.tex) || ip.blur > 0 || ip.sheet > 0;
+    var lay = needLay ? document.createElement('canvas') : null;
     var g2 = ctx;
     if (lay) { lay.width = cv.width; lay.height = cv.height; g2 = lay.getContext('2d'); }
 
@@ -1310,7 +1413,8 @@
       }
     }
     if (lay) {
-      applyFinish(g2, cv.width, cv.height, cell, 0, 0);
+      fuseLayer(g2, lay, cv.width, cv.height, cell, effIronLevel());
+      applyFinish(g2, lay, cv.width, cv.height, cell, 0, 0);
       ctx.drawImage(lay, 0, 0);
     }
     return cv;
@@ -1666,7 +1770,12 @@
     dom.beadShape.addEventListener('change', function () { view.beadShape = this.value; render(); saveSettings(); });
     [['showGrid', 'showGrid'], ['showRuler', 'showRuler']].forEach(function (p) {
       dom[p[0]].addEventListener('change', function () {
-        view[p[1]] = this.checked; layout(); render(); saveSettings();
+        view[p[1]] = this.checked;
+        if (p[1] === 'showGrid') {
+          [].forEach.call(dom.boldEvery.children, function (b) { b.disabled = !view.showGrid; });
+          dom.boldEvery.classList.toggle('disabled', !view.showGrid);
+        }
+        layout(); render(); saveSettings(); commit();
       });
     });
     dom.beadMm.addEventListener('change', function () {
@@ -2305,7 +2414,7 @@
    */
   var ENUMS = {
     fitMode: ['cover', 'contain', 'stretch'],
-    sampleMode: ['area', 'dominant', 'nearest'],
+    sampleMode: ['area', 'edge', 'dominant', 'nearest'],
     algo: ['kmeans', 'mediancut', 'direct'],
     dither: ['none', 'fs', 'ordered']
   };
@@ -2402,7 +2511,9 @@
     dom.showGrid.checked = view.showGrid;
     [].forEach.call(dom.boldEvery.children, function (b) {
       b.classList.toggle('on', +b.dataset.n === view.boldEvery);
+      b.disabled = !view.showGrid;
     });
+    dom.boldEvery.classList.toggle('disabled', !view.showGrid);
     dom.showRuler.checked = view.showRuler;
     dom.beadMm.value = String(view.beadMm);
     dom.ironLevel.value = String(view.ironLevel);
