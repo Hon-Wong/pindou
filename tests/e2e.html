@@ -495,6 +495,63 @@
     ok('反面预览是左右镜像',
        px(pvB, 0, 5) === px(pvF, rr.w - 1, 5) && px(pvB, rr.w - 1, 5) === px(pvF, 0, 5),
        '反面第1列=正面末列 ' + px(pvB, 0, 5) + ' vs ' + px(pvF, rr.w - 1, 5));
+    /* ---------- 22d-2. 表面工艺 ---------- */
+    var FIN = ['paper', 'gloss', 'towel', 'loofah', 'mesh', 'waffle', 'crumpled', 'glitter', 'velvet'];
+    var eb2 = errs.length;
+    FIN.forEach(function (f) {
+      APP.view.finish = f;
+      [0, 3].forEach(function (lv) { APP.view.ironLevel = lv; APP.render(); });
+    });
+    ok('9 种表面工艺 × 熨烫档位 渲染无报错', errs.length === eb2,
+       FIN.join(' / '));
+
+    // 纹理必须只贴在豆子上：空格处应保持底板色不变
+    APP.view.ironLevel = 1;
+    APP.view.finish = 'paper';
+    var basePv = APP.renderPreviewCanvas(8);
+    APP.view.finish = 'glitter';
+    var glitPv = APP.renderPreviewCanvas(8);
+    function pixAt(cv, gx, gy) {
+      var d = cv.getContext('2d').getImageData(gx * 8 + 4, gy * 8 + 4, 1, 1).data;
+      return d[0] + ',' + d[1] + ',' + d[2];
+    }
+    // 找一个空格（sprite 的四角一定是空的）
+    await loadImg('fixtures/sprite_pixel.png', 'sprite');
+    APP.opts.gridW = 32; APP.opts.gridH = 32;
+    run({ colors: 10, sampleMode: 'dominant', fitMode: 'contain' });
+    var rs = APP.state.result;
+    var emptyCell = null, beadCell = null;
+    for (var yy2 = 0; yy2 < rs.h && (!emptyCell || !beadCell); yy2++) {
+      for (var xx2 = 0; xx2 < rs.w; xx2++) {
+        var iv = rs.idx[yy2 * rs.w + xx2];
+        if (iv < 0 && !emptyCell) emptyCell = [xx2, yy2];
+        if (iv >= 0 && !beadCell) beadCell = [xx2, yy2];
+      }
+    }
+    APP.view.finish = 'paper';
+    var p1 = APP.renderPreviewCanvas(8);
+    APP.view.finish = 'towel';
+    var p2 = APP.renderPreviewCanvas(8);
+    ok('表面纹理不会糊到空格上',
+       emptyCell && pixAt(p1, emptyCell[0], emptyCell[1]) === pixAt(p2, emptyCell[0], emptyCell[1]),
+       '空格 (' + (emptyCell || []).join(',') + ') 两次都是 ' + (emptyCell ? pixAt(p1, emptyCell[0], emptyCell[1]) : '?'));
+    ok('表面纹理确实改变了豆子外观',
+       beadCell && pixAt(p1, beadCell[0], beadCell[1]) !== pixAt(p2, beadCell[0], beadCell[1]),
+       '豆子 (' + (beadCell || []).join(',') + ') 标准 ' + (beadCell ? pixAt(p1, beadCell[0], beadCell[1]) : '?')
+       + ' → 毛巾 ' + (beadCell ? pixAt(p2, beadCell[0], beadCell[1]) : '?'));
+
+    // 闪粉四种颜色
+    APP.view.finish = 'glitter';
+    var tintPix = {};
+    ['silver', 'gold', 'pink', 'multi'].forEach(function (t) {
+      APP.view.glitterTint = t;
+      tintPix[t] = APP.renderPreviewCanvas(8).toDataURL().length;
+    });
+    ok('闪粉四种颜色渲染结果各不相同',
+       new Set(Object.keys(tintPix).map(function (k) { return tintPix[k]; })).size >= 3,
+       JSON.stringify(tintPix));
+    APP.view.finish = 'paper'; APP.view.glitterTint = 'silver';
+
     APP.view.side = 'front'; APP.view.mode = 'chart'; APP.render();
 
     /* ---------- 22e. 撤销 / 重做 ---------- */

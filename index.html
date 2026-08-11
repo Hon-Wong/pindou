@@ -266,6 +266,29 @@
         </select>
       </div>
       <div class="row">
+        <label for="finish">表面工艺</label>
+        <select id="finish">
+          <option value="paper">烘焙纸（标准，平整哑光）</option>
+          <option value="gloss">亮面 / 镜面（光滑反光）</option>
+          <option value="towel">毛巾烫（毛茸茸绒面）</option>
+          <option value="loofah">搓澡巾烫（细网哑光）</option>
+          <option value="mesh">网格压纹</option>
+          <option value="waffle">华夫格肌理</option>
+          <option value="crumpled">褶皱做旧</option>
+          <option value="glitter">格利特闪粉</option>
+          <option value="velvet">绒面（哑光丝绒）</option>
+        </select>
+      </div>
+      <div class="row" id="tintRow" hidden>
+        <label for="glitterTint">闪粉色</label>
+        <select id="glitterTint">
+          <option value="silver">银色</option>
+          <option value="gold">金色</option>
+          <option value="pink">粉色</option>
+          <option value="multi">彩色</option>
+        </select>
+      </div>
+      <div class="row">
         <label for="sideView">观察面</label>
         <div class="seg small" id="sideView">
           <button data-s="front" class="on">正面</button>
@@ -273,7 +296,7 @@
         </div>
       </div>
       <label class="check"><input type="checkbox" id="ironBoth" checked> 双面熨烫（反面同样熔合）</label>
-      <p class="hint">成品预览仅为示意。轻烫保留孔洞和颗粒感，重烫封孔后画面偏平整光亮；反面是左右镜像，照着反面摆豆容易做反。</p>
+      <p class="hint">熨烫程度决定孔洞与平整度，表面工艺是「垫什么材料熨烫」留下的质感（毛巾出绒、格利特出闪粉、搓澡巾出细网……），两者可自由组合。反面是左右镜像，照着反面摆豆容易做反。以上均为示意效果，实际观感还取决于豆子品牌、温度与按压力度。</p>
       <label class="check"><input type="checkbox" id="showGrid" checked> 显示网格线</label>
       <div class="row">
         <label for="boldEvery">加粗间隔</label>

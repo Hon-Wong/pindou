@@ -37,7 +37,8 @@
   var view = {
     mode: 'chart', cell: 24, labelMode: 'code', beadShape: 'round',
     showGrid: true, boldEvery: 10, showRuler: true, beadMm: 5,
-    ironLevel: 1, side: 'front', ironBoth: true, theme: 'purple', focus: false
+    ironLevel: 1, side: 'front', ironBoth: true, finish: 'paper', glitterTint: 'silver',
+    theme: 'purple', focus: false
   };
 
   var LS_KEY = 'pindou.v1';
@@ -60,7 +61,7 @@
    'viewMode', 'cellSize', 'cellSizeVal', 'labelMode', 'beadShape',
    'showGrid', 'boldEvery', 'showRuler', 'beadMm',
    'btnClearHl', 'btnUndo', 'btnRedo', 'footVer', 'btnFull', 'btnFocus',
-   'ironLevel', 'sideView', 'ironBoth', 'themeDots',
+   'ironLevel', 'sideView', 'ironBoth', 'themeDots', 'finish', 'glitterTint', 'tintRow',
    'btnFeedback', 'feedbackModal', 'fbClose', 'fbType', 'fbText', 'fbContact',
    'fbDiag', 'fbIncludeDiag', 'fbPrivacy', 'fbStatus', 'fbSend', 'fbCopy',
    'viewport', 'mainCanvas', 'rulerTop', 'rulerLeft', 'corner', 'scroller', 'spacer',
@@ -150,6 +151,7 @@
    * ========================================================== */
   // 缓存键直接比对图片对象本身，而不是自增计数器：
   // 计数器一旦哪条路径忘了 +1，就会悄悄拿上一张图的结果继续算。
+  var layerCv = document.createElement('canvas');   // 预览贴纹理用的中间图层
   var rotCache = { img: null, rotate: -1, flipH: null, flipV: null, canvas: null };
   var cropCache = { base: null, crop: '', canvas: null };
 
@@ -625,6 +627,18 @@
     if (c1 < c0 || r1 < r0) { drawRulers(); return; }
 
     var hl = state.highlight;
+    // 有表面工艺时，豆子先画到独立图层，贴完纹理（source-atop）再合成，
+    // 这样纹理只落在豆子上，不会糊到空格和底板
+    var useLayer = view.mode === 'preview' && FINISH[view.finish] && FINISH[view.finish].tex;
+    var g = ctx;
+    if (useLayer) {
+      if (layerCv.width !== dom.mainCanvas.width || layerCv.height !== dom.mainCanvas.height) {
+        layerCv.width = dom.mainCanvas.width; layerCv.height = dom.mainCanvas.height;
+      }
+      g = layerCv.getContext('2d');
+      g.setTransform(dpr, 0, 0, dpr, 0, 0);
+      g.clearRect(0, 0, cw, ch);
+    }
     var showLabel = view.labelMode !== 'none' && view.mode === 'chart' && cell >= 13;
     var both = view.labelMode === 'both' && cell >= 22;
     var fontMain = Math.max(6, Math.floor(cell * (both ? 0.34 : 0.42)));
@@ -647,8 +661,8 @@
 
         if (view.mode === 'preview') {
           ctx.fillStyle = th.empty;
-          ctx.fillRect(px, py, cell, cell);
-          drawBead(ctx, px, py, cell, col.hex, dim, effIronLevel());
+          ctx.fillRect(px, py, cell, cell);       // 底板画在主画布
+          drawBead(g, px, py, cell, col.hex, dim, effIronLevel());
         } else {
           ctx.fillStyle = col.hex;
           ctx.fillRect(px, py, cell, cell);
@@ -667,6 +681,11 @@
           }
         }
       }
+    }
+
+    if (useLayer) {
+      applyFinish(g, cw, ch, cell, ox, oy);
+      ctx.drawImage(layerCv, 0, 0, cw, ch);
     }
 
     // --- 网格线 ---
@@ -713,6 +732,206 @@
     }
 
     drawRulers();
+  }
+
+  /* ==========================================================
+   * 表面工艺（垫不同材料熨烫留下的质感）
+   *
+   * 原理是「垫什么材料，冷却后豆子就留什么纹理」。以下为示意渲染，
+   * 真实观感还取决于豆子品牌、温度和按压力度。
+   * 参数含义：gloss 高光倍率，tex 叠加的纹理种类。
+   * ========================================================== */
+  var FINISH = {
+    paper:    { label: '烘焙纸（标准）',   gloss: 1.0,  tex: null },
+    gloss:    { label: '亮面 / 镜面',      gloss: 2.0,  tex: 'gloss' },
+    towel:    { label: '毛巾（毛茸茸）',   gloss: 0.35, tex: 'towel' },
+    loofah:   { label: '搓澡巾（细网哑光）', gloss: 0.5, tex: 'loofah' },
+    mesh:     { label: '网格压纹',         gloss: 0.8,  tex: 'mesh' },
+    waffle:   { label: '华夫格',           gloss: 0.8,  tex: 'waffle' },
+    crumpled: { label: '褶皱做旧',         gloss: 0.7,  tex: 'crumpled' },
+    glitter:  { label: '格利特闪粉',       gloss: 1.2,  tex: 'glitter' },
+    velvet:   { label: '绒面（哑光丝绒）', gloss: 0.2,  tex: 'velvet' }
+  };
+  var TINTS = {
+    silver: ['#ffffff', '#dfe6ee', '#b9c6d6'],
+    gold:   ['#fff3c4', '#ffd24a', '#c99a1e'],
+    pink:   ['#ffffff', '#ffc7e0', '#ff8ec0'],
+    multi:  ['#ff7ab8', '#7ad9ff', '#ffe27a', '#9dff9d', '#c9a0ff']
+  };
+
+  var texCache = {};
+  /**
+   * 生成可平铺的纹理。用固定种子保证每次一致；
+   * 所有随机图元都做 3×3 环绕绘制，否则平铺时会看到明显接缝。
+   */
+  function finishPattern(ctx, kind, cell) {
+    var u = Math.max(6, Math.round(cell));            // 纹理特征随格子大小缩放
+    var key = kind + '@' + u + '@' + view.glitterTint;
+    if (texCache[key]) return texCache[key];
+
+    var T = Math.max(160, u * 8);
+    var cv = document.createElement('canvas');
+    cv.width = cv.height = T;
+    var c = cv.getContext('2d');
+    var rnd = Q.rng(20260811);
+    var i, x, y, r;
+
+    // 环绕绘制：把图元在 3×3 个偏移位置各画一遍，平铺后无缝
+    function wrap(fn) {
+      for (var dy = -1; dy <= 1; dy++) {
+        for (var dx = -1; dx <= 1; dx++) {
+          c.save(); c.translate(dx * T, dy * T); fn(); c.restore();
+        }
+      }
+    }
+    function dot(cx, cy, rr, style) {
+      wrap(function () {
+        c.beginPath(); c.arc(cx, cy, rr, 0, 6.283); c.fillStyle = style; c.fill();
+      });
+    }
+
+    if (kind === 'towel') {                       // 毛圈绒感：大小不一的软绒球
+      var n = Math.round(T * T / (u * u) * 6);
+      for (i = 0; i < n; i++) {
+        x = rnd() * T; y = rnd() * T; r = u * (0.06 + rnd() * 0.16);
+        var lit = rnd() < 0.5;
+        var g0 = c.createRadialGradient(x, y, 0, x, y, r);
+        g0.addColorStop(0, lit ? 'rgba(255,255,255,.30)' : 'rgba(0,0,0,.28)');
+        g0.addColorStop(1, 'rgba(0,0,0,0)');
+        (function (gg, xx, yy, rr) {
+          wrap(function () { c.beginPath(); c.arc(xx, yy, rr, 0, 6.283); c.fillStyle = gg; c.fill(); });
+        })(g0, x, y, r);
+      }
+    } else if (kind === 'loofah') {               // 搓澡巾：清晰的斜向细网
+      var step = Math.max(3, u * 0.34);
+      c.lineWidth = Math.max(1, u * 0.07);
+      for (i = -T; i < T * 2; i += step) {
+        c.strokeStyle = 'rgba(0,0,0,.16)';
+        c.beginPath(); c.moveTo(i, 0); c.lineTo(i + T, T); c.stroke();
+        c.strokeStyle = 'rgba(255,255,255,.15)';
+        c.beginPath(); c.moveTo(i + c.lineWidth, 0); c.lineTo(i + T + c.lineWidth, T); c.stroke();
+        c.strokeStyle = 'rgba(0,0,0,.13)';
+        c.beginPath(); c.moveTo(i, T); c.lineTo(i + T, 0); c.stroke();
+      }
+    } else if (kind === 'mesh') {                 // 网布：规整方格压痕
+      var g1 = Math.max(4, u * 0.45);
+      c.lineWidth = Math.max(1, g1 / 5);
+      for (i = 0; i <= T; i += g1) {
+        c.strokeStyle = 'rgba(0,0,0,.22)';
+        c.beginPath(); c.moveTo(i, 0); c.lineTo(i, T); c.moveTo(0, i); c.lineTo(T, i); c.stroke();
+        c.strokeStyle = 'rgba(255,255,255,.18)';
+        c.beginPath();
+        c.moveTo(i + c.lineWidth, 0); c.lineTo(i + c.lineWidth, T);
+        c.moveTo(0, i + c.lineWidth); c.lineTo(T, i + c.lineWidth); c.stroke();
+      }
+    } else if (kind === 'waffle') {               // 华夫格：粗方格 + 立体内凹
+      var w = Math.max(12, u * 1.6);
+      for (y = 0; y < T; y += w) for (x = 0; x < T; x += w) {
+        var gr = c.createLinearGradient(x, y, x + w, y + w);
+        gr.addColorStop(0, 'rgba(255,255,255,.22)');
+        gr.addColorStop(0.5, 'rgba(0,0,0,0)');
+        gr.addColorStop(1, 'rgba(0,0,0,.26)');
+        c.fillStyle = gr;
+        c.fillRect(x + 1, y + 1, w - 2, w - 2);
+      }
+      c.strokeStyle = 'rgba(0,0,0,.30)';
+      c.lineWidth = Math.max(2, w / 7);
+      for (i = 0; i <= T; i += w) {
+        c.beginPath(); c.moveTo(i, 0); c.lineTo(i, T); c.moveTo(0, i); c.lineTo(T, i); c.stroke();
+      }
+    } else if (kind === 'crumpled') {             // 褶皱：随机长折痕
+      c.lineCap = 'round';
+      for (i = 0; i < 70; i++) {
+        var sx = rnd() * T, sy = rnd() * T;
+        var pts = [[sx, sy]];
+        for (var k = 0; k < 3; k++) {
+          sx += (rnd() - 0.5) * T * 0.5; sy += (rnd() - 0.5) * T * 0.5;
+          pts.push([sx, sy]);
+        }
+        var lw = u * (0.04 + rnd() * 0.14);
+        var st = rnd() < 0.5 ? 'rgba(255,255,255,.20)' : 'rgba(0,0,0,.22)';
+        (function (pp, ww, ss) {
+          wrap(function () {
+            c.beginPath(); c.moveTo(pp[0][0], pp[0][1]);
+            for (var j = 1; j < pp.length; j++) c.lineTo(pp[j][0], pp[j][1]);
+            c.lineWidth = ww; c.strokeStyle = ss; c.stroke();
+          });
+        })(pts, lw, st);
+      }
+    } else if (kind === 'glitter') {              // 格利特：稀疏亮片 + 十字星
+      var tint = TINTS[view.glitterTint] || TINTS.silver;
+      var nn = Math.round(T * T / (u * u) * 1.6);
+      for (i = 0; i < nn; i++) {
+        x = rnd() * T; y = rnd() * T; r = u * (0.04 + rnd() * 0.10);
+        c.globalAlpha = 0.45 + rnd() * 0.5;
+        dot(x, y, r, tint[(rnd() * tint.length) | 0]);
+      }
+      c.globalAlpha = 1;
+      var stars = Math.max(6, Math.round(T * T / (u * u) * 0.12));
+      for (i = 0; i < stars; i++) {
+        x = rnd() * T; y = rnd() * T; r = u * (0.18 + rnd() * 0.22);
+        (function (xx, yy, rr) {
+          wrap(function () {
+            c.strokeStyle = 'rgba(255,255,255,.9)';
+            c.lineWidth = Math.max(1, rr / 5);
+            c.beginPath();
+            c.moveTo(xx - rr, yy); c.lineTo(xx + rr, yy);
+            c.moveTo(xx, yy - rr); c.lineTo(xx, yy + rr);
+            c.stroke();
+          });
+        })(x, y, r);
+      }
+    } else if (kind === 'velvet') {               // 绒面：压暗 + 极细绒毛
+      c.fillStyle = 'rgba(0,0,0,.18)';
+      c.fillRect(0, 0, T, T);
+      c.lineWidth = 1;
+      for (i = 0; i < T * T / 26; i++) {
+        x = rnd() * T; y = rnd() * T;
+        var a = rnd() * 6.283, len = 1 + rnd() * (u * 0.12);
+        c.strokeStyle = rnd() < 0.5 ? 'rgba(255,255,255,.10)' : 'rgba(0,0,0,.10)';
+        c.beginPath(); c.moveTo(x, y);
+        c.lineTo(x + Math.cos(a) * len, y + Math.sin(a) * len); c.stroke();
+      }
+    } else if (kind === 'gloss') {                // 亮面：窄而强的斜向高光带，避免整体发白
+      var lg = c.createLinearGradient(0, 0, T, T);
+      lg.addColorStop(0.00, 'rgba(255,255,255,0)');
+      lg.addColorStop(0.16, 'rgba(255,255,255,.30)');
+      lg.addColorStop(0.24, 'rgba(255,255,255,0)');
+      lg.addColorStop(0.55, 'rgba(0,0,0,.10)');
+      lg.addColorStop(0.70, 'rgba(255,255,255,.22)');
+      lg.addColorStop(0.78, 'rgba(255,255,255,0)');
+      lg.addColorStop(1.00, 'rgba(0,0,0,.08)');
+      c.fillStyle = lg; c.fillRect(0, 0, T, T);
+    }
+    var pat = ctx.createPattern(cv, 'repeat');
+    texCache[key] = pat;
+    return pat;
+  }
+
+  var BLEND = {
+    towel: 'overlay', loofah: 'overlay', mesh: 'overlay', waffle: 'overlay',
+    crumpled: 'overlay', velvet: 'multiply', gloss: 'screen', glitter: 'lighter'
+  };
+
+  /**
+   * 把表面工艺叠加到「只有豆子的图层」上。
+   * 用 source-atop，纹理不会糊到空格和板面上。
+   */
+  function applyFinish(ctx, w, h, cell, ox, oy) {
+    var f = FINISH[view.finish];
+    if (!f || !f.tex) return;
+    var pat = finishPattern(ctx, f.tex, cell);
+    ctx.save();
+    ctx.globalCompositeOperation = 'source-atop';
+    if (BLEND[f.tex] && BLEND[f.tex] !== 'source-atop') {
+      // 先按混合模式画一层，再用 source-atop 裁掉空白处
+      ctx.globalCompositeOperation = 'source-atop';
+    }
+    ctx.globalAlpha = f.tex === 'glitter' ? 0.85 : 1;
+    ctx.translate(ox % 1, oy % 1);
+    ctx.fillStyle = pat;
+    ctx.fillRect(-2, -2, w + 4, h + 4);
+    ctx.restore();
   }
 
   /**
@@ -763,10 +982,12 @@
         ctx.beginPath(); ctx.arc(cx, cy, cell * p.hole, 0, Math.PI * 2);
         ctx.fillStyle = 'rgba(0,0,0,' + p.edge * 2 + ')'; ctx.fill();
       }
-      if (p.gloss > 0) {                                  // 高光
+      var gm = (FINISH[view.finish] || FINISH.paper).gloss;
+      if (p.gloss * gm > 0.01) {                          // 高光（受表面工艺影响）
         ctx.beginPath();
         ctx.arc(cx - size * 0.16, cy - size * 0.18, size * (p.hole > 0 ? 0.26 : 0.34), 0, Math.PI * 2);
-        ctx.fillStyle = 'rgba(255,255,255,' + p.gloss + ')'; ctx.fill();
+        ctx.fillStyle = 'rgba(255,255,255,' + Math.min(0.6, p.gloss * gm).toFixed(3) + ')';
+        ctx.fill();
       }
       if (p.edge > 0.06) {                                // 颗粒描边，强化未熔感
         ctx.strokeStyle = 'rgba(0,0,0,' + p.edge * 0.6 + ')';
@@ -1075,12 +1296,22 @@
     cv.width = r.w * cell; cv.height = r.h * cell;
     var ctx = cv.getContext('2d');
     ctx.fillStyle = '#e6e7ea'; ctx.fillRect(0, 0, cv.width, cv.height);
+
+    var f = FINISH[view.finish];
+    var lay = (f && f.tex) ? document.createElement('canvas') : null;
+    var g2 = ctx;
+    if (lay) { lay.width = cv.width; lay.height = cv.height; g2 = lay.getContext('2d'); }
+
     for (var y = 0; y < r.h; y++) {
       for (var x = 0; x < r.w; x++) {
         var i = r.idx[y * r.w + (mirrored() ? r.w - 1 - x : x)];
         if (i < 0) continue;
-        drawBead(ctx, x * cell, y * cell, cell, r.sub[i].hex, false, effIronLevel());
+        drawBead(g2, x * cell, y * cell, cell, r.sub[i].hex, false, effIronLevel());
       }
+    }
+    if (lay) {
+      applyFinish(g2, cv.width, cv.height, cell, 0, 0);
+      ctx.drawImage(lay, 0, 0);
     }
     return cv;
   }
@@ -1452,6 +1683,21 @@
       }
       render(); saveSettings(); commit();
     });
+    dom.finish.addEventListener('change', function () {
+      view.finish = this.value;
+      dom.tintRow.hidden = view.finish !== 'glitter';
+      if (view.mode !== 'preview') {
+        view.mode = 'preview';
+        [].forEach.call(dom.viewMode.children, function (b) {
+          b.classList.toggle('on', b.dataset.v === 'preview');
+        });
+        layout();
+      }
+      render(); saveSettings(); commit();
+    });
+    dom.glitterTint.addEventListener('change', function () {
+      view.glitterTint = this.value; render(); saveSettings(); commit();
+    });
     dom.sideView.addEventListener('click', function (e) {
       var b = e.target.closest('button'); if (!b) return;
       view.side = b.dataset.s;
@@ -1799,6 +2045,8 @@
     if (q.has('cell')) view.cell = Math.max(6, Math.min(64, parseInt(q.get('cell'), 10) || view.cell));
     if (q.has('label')) view.labelMode = q.get('label');
     if (q.has('iron')) view.ironLevel = parseInt(q.get('iron'), 10);
+    if (q.has('finish')) view.finish = q.get('finish');
+    if (q.has('tint')) view.glitterTint = q.get('tint');
     if (q.has('side')) view.side = q.get('side');
     if (q.has('theme')) view.theme = q.get('theme');
     if (q.has('rotate')) opts.rotate = parseInt(q.get('rotate'), 10);
@@ -2098,6 +2346,8 @@
     view.cell = isFinite(cell) ? C.clamp(Math.round(cell), 6, 64) : DEFAULTS.view.cell;
     if ([0, 1, 2, 3].indexOf(+view.ironLevel) < 0) view.ironLevel = 1; else view.ironLevel = +view.ironLevel;
     if (['front', 'back'].indexOf(view.side) < 0) view.side = 'front';
+    if (!FINISH[view.finish]) view.finish = 'paper';
+    if (!TINTS[view.glitterTint]) view.glitterTint = 'silver';
     view.ironBoth = !!view.ironBoth;
     view.focus = !!view.focus;
     if (THEMES.indexOf(view.theme) < 0) view.theme = 'purple';
@@ -2156,6 +2406,9 @@
     dom.showRuler.checked = view.showRuler;
     dom.beadMm.value = String(view.beadMm);
     dom.ironLevel.value = String(view.ironLevel);
+    dom.finish.value = view.finish;
+    dom.glitterTint.value = view.glitterTint;
+    dom.tintRow.hidden = view.finish !== 'glitter';
     dom.ironBoth.checked = view.ironBoth;
     [].forEach.call(dom.sideView.children, function (b) {
       b.classList.toggle('on', b.dataset.s === view.side);
