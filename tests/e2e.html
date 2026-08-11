@@ -337,6 +337,21 @@
     ok('全不选→全选 不会弄丢「量化色数」设置', APP.opts.colors === 24, '仍为 ' + APP.opts.colors);
     D.getElementById('btnCloseModal').click();
 
+    ok('配色清单默认按色号排序（A1→A2→B1…）',
+       D.getElementById('listSort').value === 'code',
+       '当前排序 = ' + D.getElementById('listSort').value);
+    (function () {
+      var codes = [].map.call(D.querySelectorAll('#colorList .crow .code'),
+                              function (e) { return e.textContent.trim(); });
+      var sorted = codes.slice().sort(function (a, b) {
+        var ra = /^([A-Za-z]*)(\d*)/.exec(a), rb = /^([A-Za-z]*)(\d*)/.exec(b);
+        if (ra[1] !== rb[1]) return ra[1] < rb[1] ? -1 : 1;
+        return parseInt(ra[2] || '0', 10) - parseInt(rb[2] || '0', 10);
+      });
+      ok('清单顺序确实是字母升序 + 同字母内数字从小到大',
+         codes.join(',') === sorted.join(','), codes.slice(0, 8).join(' '));
+    })();
+
     var listRows = D.querySelectorAll('#colorList .crow');
     ok('右侧配色清单行数 = 结果色数', listRows.length === APP.state.result.sub.length,
        listRows.length + ' 行');
@@ -565,6 +580,28 @@
     ok('感知优化结果完整且无异常',
        ssimSum.total === 40 * 30 && errs.length === errB, ssimSum.total + ' 颗');
     APP.opts.colors = 16;
+
+    /* ---------- 22b-4. 色数上限由色卡离散性决定 ----------
+       抖动对观感保真的提升在 tests/unit.js 里量化验证（需要量化前的连续网格做基准，
+       e2e 拿不到）。这里只确认一个事实：整卡直配的用色数就是这张图的天花板，
+       所以「要 24 色只出 23 色」不是算法保守，是色卡里就没有更细的过渡色。 */
+    await loadImg('fixtures/photo_real.png', 'photo_real.png');
+    APP.opts.lockAspect = false; APP.opts.gridW = 48; APP.opts.gridH = 36;
+    APP.opts.rotate = 0; APP.opts.crop = null; APP.opts.flipH = false; APP.opts.flipV = false;
+    run({ colors: 64, algo: 'direct', dither: 'none', sampleMode: 'area',
+          mosaic: 1, blur: 0, sharpen: 0, fitMode: 'stretch',
+          brightness: 0, contrast: 0, saturation: 0, gamma: 100, bgRemove: false });
+    var ceiling = APP.summary().colors;
+    run({ colors: 24, algo: 'kmeans' });
+    var got24 = APP.summary().colors;
+    run({ colors: 48 });
+    var got48 = APP.summary().colors;
+    ok('要更多色也不会超过色卡在这张图上的天花板',
+       got24 <= ceiling && got48 <= ceiling + 2,
+       '整卡直配上限 ' + ceiling + ' 色 ｜ 要 24 色实得 ' + got24 + ' ｜ 要 48 色实得 ' + got48);
+    ok('在天花板之内，要多少给多少', got24 >= Math.min(24, ceiling) - 2,
+       '要 24 得 ' + got24 + '（上限 ' + ceiling + '）');
+    run({ colors: 16, dither: 'none' });
 
     /* ---------- 22c. 旋转 / 翻转 / 裁剪 ---------- */
     await loadImg('fixtures/photo_landscape.png', 'photo_landscape.png');

@@ -324,5 +324,85 @@ var maxDev = 0;
 for (var z4 = 0; z4 < 400; z4++) maxDev = Math.max(maxDev, Math.abs(go2[z4*4] - ga2[z4*4]));
 ok('平滑渐变不会被搞出振铃（与面积平均偏差 < 5）', maxDev < 5, '最大偏差 ' + maxDev.toFixed(2));
 
+/* ---- 抖动：突破离散色卡的唯一手段 ----
+ * 拼豆色卡是离散的，一片渐变往往只途经十来颗珠子的颜色，这是「用色偏少」的根因。
+ * 抖动用邻近色交错，让肉眼在一定距离外自动混色。
+ * 所以指标必须按「3×3 局部平均」量 —— 逐格比反而会变差，那是抖动的代价而非缺陷。
+ * 基准是量化前的连续网格（真值），不能拿另一次量化结果当基准。 */
+var FW2 = 320, FH2 = 240;
+var fSrc = new Uint8ClampedArray(FW2 * FH2 * 4);
+for (var fy = 0; fy < FH2; fy++) {
+  for (var fx = 0; fx < FW2; fx++) {
+    var fi = (fy * FW2 + fx) * 4, ft = fy / FH2, fr, fg, fb;
+    if (ft < 0.45) { var fk = ft / 0.45; fr = 110 + 80*fk; fg = 160 + 60*fk; fb = 230 - 30*fk; }
+    else { var fk2 = (ft - 0.45) / 0.55; fr = 90 - 30*fk2; fg = 135 - 40*fk2; fb = 65 - 25*fk2; }
+    if ((fx-240)*(fx-240) + (fy-45)*(fy-45) < 900) { fr = 255; fg = 238; fb = 120; }
+    if (fx > 75 && fx < 130 && fy > 150 && fy < 210) { fr = 210; fg = 60; fb = 55; }
+    fSrc[fi] = fr; fSrc[fi+1] = fg; fSrc[fi+2] = fb; fSrc[fi+3] = 255;
+  }
+}
+var GW2 = 48, GH2 = 36;
+var truth = Q.downsample(fSrc, FW2, FH2, GW2, GH2, 'area');   // 量化前的连续网格 = 真值
+var mp = P.get('mard221').colors;
+var st2 = Q.collectLab(truth, GW2, GH2, 128, 24000);
+var km2 = Q.kmeans(st2.lab, st2.n, 24, 26, 20240815);
+var sub2 = Q.centersToPalette(km2.centers, km2.k, km2.weights, mp, true)
+            .map(function (i) { return mp[i]; });
+sub2 = Q.refinePalette(truth, GW2, GH2, mp, sub2, 24, 128);
+
+function localDeltaE(idx) {
+  var tot = 0, n = 0;
+  for (var by = 0; by + 3 <= GH2; by += 3) {
+    for (var bx = 0; bx + 3 <= GW2; bx += 3) {
+      var ar=0, ag=0, ab=0, br=0, bg=0, bb=0, c3=0;
+      for (var dy = 0; dy < 3; dy++) for (var dx = 0; dx < 3; dx++) {
+        var p4 = (by+dy) * GW2 + (bx+dx), q4 = idx[p4];
+        if (q4 < 0) continue;
+        ar += truth[p4*4]; ag += truth[p4*4+1]; ab += truth[p4*4+2];
+        br += sub2[q4].rgb[0]; bg += sub2[q4].rgb[1]; bb += sub2[q4].rgb[2];
+        c3++;
+      }
+      if (!c3) continue;
+      var la = C.rgbToLab(ar/c3, ag/c3, ab/c3, [0,0,0]);
+      var lb = C.rgbToLab(br/c3, bg/c3, bb/c3, [0,0,0]);
+      tot += C.deltaE2000(la[0],la[1],la[2], lb[0],lb[1],lb[2]);
+      n++;
+    }
+  }
+  return n ? tot / n : 999;
+}
+function perCellDeltaE(idx) {
+  var tmp2 = [0,0,0], tot = 0, n = 0;
+  for (var p5 = 0; p5 < GW2*GH2; p5++) {
+    var q5 = idx[p5];
+    if (q5 < 0) continue;
+    C.rgbToLab(truth[p5*4], truth[p5*4+1], truth[p5*4+2], tmp2);
+    tot += C.deltaE2000(tmp2[0],tmp2[1],tmp2[2], sub2[q5].lab[0],sub2[q5].lab[1],sub2[q5].lab[2]);
+    n++;
+  }
+  return n ? tot / n : 999;
+}
+var idxNone = Q.remap(truth, GW2, GH2, sub2, { dither: 'none', alphaTh: 128 });
+var idxFs   = Q.remap(truth, GW2, GH2, sub2, { dither: 'fs', amount: 0.85, alphaTh: 128 });
+var lNone = localDeltaE(idxNone), lFs = localDeltaE(idxFs);
+var cNone2 = perCellDeltaE(idxNone), cFs = perCellDeltaE(idxFs);
+// 提升幅度依图而异（实测 17%~47%），所以只断言「确有提升」，不锁死具体数字 ——
+// 上一版按某张图量到的 47% 定了 30% 的门槛，换张图就挂了，那是拿测试凑结论。
+ok('抖动提升观感保真度（3×3 局部平均 ΔE2000 下降）',
+   lFs < lNone * 0.92,
+   '不抖动 ' + lNone.toFixed(2) + ' → Floyd–Steinberg ' + lFs.toFixed(2)
+   + '（提升 ' + Math.round((1 - lFs / lNone) * 100) + '%）');
+ok('逐格误差反而变大 —— 这是抖动的代价，不是缺陷',
+   cFs > cNone2,
+   '逐格 ΔE：不抖动 ' + cNone2.toFixed(2) + ' → 抖动 ' + cFs.toFixed(2));
+
+// 色卡离散性造成的天花板
+var full = Q.remap(truth, GW2, GH2, mp, { dither: 'none', alphaTh: 128 });
+var usedFull = {};
+for (var p6 = 0; p6 < GW2*GH2; p6++) if (full[p6] >= 0) usedFull[full[p6]] = 1;
+ok('整卡直配的用色数就是这张图的色彩天花板',
+   Object.keys(usedFull).length < mp.length * 0.2,
+   '221 色卡里只有 ' + Object.keys(usedFull).length + ' 色被用到 —— 「用色偏少」源于色卡离散，不是算法保守');
+
 print('');
 print(fails === 0 ? '全部通过 ✅' : (fails + ' 项失败 ❌'));

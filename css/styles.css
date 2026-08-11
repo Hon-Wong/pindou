@@ -446,3 +446,35 @@ details.sub>*:not(summary){margin-top:8px}
 /* 关掉网格线后，加粗间隔就没意义了，置灰 */
 .seg.disabled{opacity:.4}
 .seg button:disabled{cursor:not-allowed}
+
+/* ============ 触屏手势 ============ */
+/* 必须关掉浏览器的默认手势，否则双指会被拿去缩放整个页面，
+   我们的 pointermove 收不到第二根手指 —— 手机上捏合失效就是这个原因。
+   代价是单指平移要自己实现（见 app.js 的 Pointer Events 部分）。 */
+.scroller{touch-action:none}
+.crop-stage{touch-action:none}
+
+/* ============ 沉浸模式（全屏兜底） ============ */
+/* iOS Safari 不支持非 video 元素的 Fullscreen API，
+   所以真全屏之外还得有一套纯 CSS 的沉浸模式，手机上才有全屏可用。 */
+body.immersive .topbar,
+body.immersive .panel,
+body.immersive .site-foot{display:none}
+body.immersive .layout{display:block;grid-template-columns:1fr}
+body.immersive .stage{height:100vh;height:100dvh}
+body.immersive{overflow:hidden}
+
+#immersiveExit{
+  display:none;position:fixed;z-index:200;
+  top:calc(env(safe-area-inset-top, 0px) + 10px);
+  right:calc(env(safe-area-inset-right, 0px) + 10px);
+  background:rgba(0,0,0,.62);color:#fff;border:1px solid rgba(255,255,255,.28);
+  padding:8px 13px;border-radius:20px;cursor:pointer;
+  font:inherit;font-size:12.5px;backdrop-filter:blur(6px);
+}
+#immersiveExit:hover{background:rgba(0,0,0,.8)}
+body.immersive #immersiveExit{display:block}
+
+@media (max-width:900px){
+  body.immersive .stage{height:100vh;height:100dvh;min-height:0}
+}

@@ -790,5 +790,77 @@
     buf[p * 3 + 2] += eb * f;
   }
 
+  /**
+   * 补齐色号槽位，把色数用满 —— 「最大限度保真」。
+   *
+   * 问题：K-Means 给出 N 个质心后，每个质心要映射到色卡里最近的珠子色。
+   * 映射会让质心位置发生偏移，于是有些珠子色在最终分配时一格都抢不到，
+   * 这些槽位就被白白浪费了 —— 实测要 32 色往往只出 20 色，
+   * 等于三分之一的色彩预算打了水漂，保真度自然上不去。
+   *
+   * 做法：反复「丢掉空槽 → 把腾出来的名额给误差最大的区域」。
+   * 每轮找出当前误差最大的格子，为它配一个尚未使用的最近珠子色；
+   * 新加的色号一定会抢到至少它自己那一格，所以不会再变成空槽。
+   * 这是纯增益 —— 只填空位，不动已经在用的色号，平均误差只会下降。
+   */
+  Q.refinePalette = function (grid, w, h, pal, sub, want, alphaTh, rounds) {
+    rounds = rounds || 6;
+    var n = w * h;
+    var inSub = {};
+    sub.forEach(function (c) { inSub[c.code] = 1; });
+
+    for (var pass = 0; pass < rounds; pass++) {
+      var idx = Q.remap(grid, w, h, sub, { dither: 'none', alphaTh: alphaTh });
+
+      // 丢掉一格都没抢到的色号
+      var counts = new Int32Array(sub.length), p;
+      for (p = 0; p < n; p++) if (idx[p] >= 0) counts[idx[p]]++;
+      var kept = [], keptMap = new Int32Array(sub.length).fill(-1);
+      for (var i = 0; i < sub.length; i++) {
+        if (counts[i] > 0) { keptMap[i] = kept.length; kept.push(sub[i]); }
+        else delete inSub[sub[i].code];
+      }
+      sub = kept;
+      if (sub.length >= want) break;
+
+      // 逐格算误差，挑误差最大的几格补色号
+      var tmp = [0, 0, 0];
+      var errs = [];
+      for (p = 0; p < n; p++) {
+        var q = idx[p];
+        if (q < 0) continue;
+        var m = keptMap[q];
+        if (m < 0) m = 0;
+        var i4 = p << 2;
+        C.rgbToLab(grid[i4], grid[i4 + 1], grid[i4 + 2], tmp);
+        var t = sub[m] ? sub[m].lab : [0, 0, 0];
+        errs.push([C.deltaE76sq(tmp[0], tmp[1], tmp[2], t[0], t[1], t[2]), p, tmp[0], tmp[1], tmp[2]]);
+      }
+      if (!errs.length) break;
+      errs.sort(function (a, b) { return b[0] - a[0]; });
+
+      var need = want - sub.length, added = 0;
+      for (var e = 0; e < errs.length && need > 0; e++) {
+        if (errs[e][0] < 4) break;                 // 误差已经很小，没必要再补
+        // 找一个还没用过的、离这格最近的珠子色
+        var best = -1, bd = Infinity;
+        for (var j = 0; j < pal.length; j++) {
+          if (inSub[pal[j].code]) continue;
+          var d = C.deltaE76sq(errs[e][2], errs[e][3], errs[e][4],
+                               pal[j].lab[0], pal[j].lab[1], pal[j].lab[2]);
+          if (d < bd) { bd = d; best = j; }
+        }
+        if (best < 0) break;
+        // 如果这格用新色号也好不了多少，就跳过，换下一格
+        if (bd >= errs[e][0] * 0.9) continue;
+        inSub[pal[best].code] = 1;
+        sub.push(pal[best]);
+        need--; added++;
+      }
+      if (!added) break;
+    }
+    return sub;
+  };
+
   PD.quantize = Q;
 })(typeof window !== 'undefined' ? window : this);

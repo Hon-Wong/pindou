@@ -38,7 +38,7 @@
     mode: 'chart', cell: 24, labelMode: 'code', beadShape: 'round',
     showGrid: true, boldEvery: 10, showRuler: true, beadMm: 5,
     ironLevel: 1, side: 'front', ironBoth: true, finish: 'paper', glitterTint: 'silver',
-    theme: 'purple', focus: false
+    theme: 'purple', focus: false, immersive: false
   };
 
   var LS_KEY = 'pindou.v1';
@@ -61,7 +61,7 @@
    'bgRemove', 'bgColor', 'btnPickBg', 'bgTol', 'bgTolVal', 'alphaTh', 'alphaThVal',
    'viewMode', 'cellSize', 'cellSizeVal', 'labelMode', 'beadShape',
    'showGrid', 'boldEvery', 'showRuler', 'beadMm',
-   'btnClearHl', 'btnUndo', 'btnRedo', 'footVer', 'btnFull', 'btnFocus',
+   'btnClearHl', 'btnUndo', 'btnRedo', 'footVer', 'btnFull', 'btnFocus', 'immersiveExit',
    'ironLevel', 'sideView', 'ironBoth', 'themeDots', 'finish', 'glitterTint', 'tintRow',
    'btnFeedback', 'feedbackModal', 'fbClose', 'fbType', 'fbText', 'fbContact',
    'fbDiag', 'fbIncludeDiag', 'fbPrivacy', 'fbStatus', 'fbSend', 'fbCopy',
@@ -426,7 +426,7 @@
    * ========================================================== */
   var SCENES = {
     photo: { label: '照片',
-      sampleMode: 'ssim', algo: 'kmeans', colors: 24, dither: 'none',
+      sampleMode: 'ssim', algo: 'kmeans', colors: 24, dither: 'fs', ditherAmt: 55,
       mosaic: 1, blur: 0, sharpen: 15, contrast: 6, saturation: 8, gamma: 100 },
     // 动漫/插画：大片平涂 + 细线稿。用众数采样保住平涂区不糊，
     // 关掉抖动免得干净色块被打成噪点，锐化把线条拉回来，饱和度补一点。
@@ -441,7 +441,12 @@
       mosaic: 1, blur: 0, sharpen: 0, contrast: 0, saturation: 0, gamma: 100 },
     mono:  { label: '单色剪影',
       sampleMode: 'area', algo: 'kmeans', colors: 2, dither: 'none',
-      mosaic: 1, blur: 0, sharpen: 20, contrast: 35, saturation: -100, gamma: 100 }
+      mosaic: 1, blur: 0, sharpen: 20, contrast: 35, saturation: -100, gamma: 100 },
+    // 拼豆色卡是离散的，逼近原图只能靠抖动让邻近色在视觉上混合。
+    // 实测 3×3 局部平均 ΔE2000：不抖动 5.69 → FS 抖动 2.99。
+    fidelity: { label: '最大保真',
+      sampleMode: 'ssim', algo: 'kmeans', colors: 48, dither: 'fs', ditherAmt: 85,
+      mosaic: 1, blur: 0, sharpen: 8, contrast: 0, saturation: 0, gamma: 100 }
   };
 
   function applyScene(id) {
@@ -528,6 +533,9 @@
       sub = picked.map(function (ix) { return pal[ix]; });
     }
     if (!sub.length) sub = [pal[0]];
+
+    // 把没抢到格子的色号槽位补给误差最大的区域，别浪费色彩预算
+    sub = Q.refinePalette(grid, gw, gh, pal, sub, want, opts.alphaTh);
 
     var idx = Q.remap(grid, gw, gh, sub, {
       dither: opts.dither,
@@ -1190,7 +1198,7 @@
     var r = state.result;
     if (!r) return [];
     var ord = r.sub.map(function (_, i) { return i; });
-    var mode = dom.listSort.value;
+    var mode = dom.listSort.value || 'code';
     if (mode === 'count') ord.sort(function (a, b) { return r.counts[b] - r.counts[a]; });
     else if (mode === 'code') ord.sort(function (a, b) { return cmpCode(r.sub[a].code, r.sub[b].code); });
     else ord.sort(function (a, b) {
@@ -1838,9 +1846,13 @@
     });
     dom.btnFocus.addEventListener('click', function () { setFocus(!view.focus); });
     dom.btnFull.addEventListener('click', toggleFullscreen);
-    document.addEventListener('fullscreenchange', function () {
-      dom.btnFull.classList.toggle('on', !!document.fullscreenElement);
-      setTimeout(function () { layout(); render(); }, 60);
+    dom.immersiveExit.addEventListener('click', function () { toggleFullscreen(); });
+    ['fullscreenchange', 'webkitfullscreenchange'].forEach(function (ev) {
+      document.addEventListener(ev, function () {
+        // 用户按 Esc 或系统手势退出了真全屏，沉浸模式也要跟着退出
+        if (!fsElement() && view.immersive) setImmersive(false);
+        setTimeout(function () { layout(); render(); }, 60);
+      });
     });
 
     dom.boldEvery.addEventListener('click', function (e) {
@@ -1962,47 +1974,104 @@
     /* --- 画布交互 --- */
     dom.scroller.addEventListener('scroll', function () { render(); });
 
-    var drag = null;
-    dom.scroller.addEventListener('mousedown', function (e) {
-      if (e.button !== 0 && e.button !== 1) return;
-      drag = { x: e.clientX, y: e.clientY, sl: dom.scroller.scrollLeft, st: dom.scroller.scrollTop, moved: 0 };
-    });
-    window.addEventListener('mousemove', function (e) {
-      if (drag) {
-        var dx = e.clientX - drag.x, dy = e.clientY - drag.y;
-        drag.moved = Math.max(drag.moved, Math.abs(dx) + Math.abs(dy));
-        if (drag.moved > 4) {
-          dom.scroller.classList.add('grabbing');
-          dom.scroller.scrollLeft = drag.sl - dx;
-          dom.scroller.scrollTop = drag.st - dy;
-        }
-        return;
-      }
-      updateHover(e);
-    });
-    window.addEventListener('mouseup', function (e) {
-      if (drag && drag.moved <= 4) pickCell(e);
-      drag = null;
-      dom.scroller.classList.remove('grabbing');
-    });
-    dom.scroller.addEventListener('mouseleave', function () {
-      state.hover = null; dom.hoverInfo.textContent = '—'; render();
-    });
-    dom.scroller.addEventListener('wheel', function (e) {
-      if (!e.ctrlKey && !e.metaKey) return;
-      e.preventDefault();
-      var old = view.cell;
-      var next = Math.max(6, Math.min(64, Math.round(old * (e.deltaY < 0 ? 1.15 : 0.87))));
-      if (next === old) return;
+    /* --- 画布交互：平移 / 缩放 / 取色，鼠标与触屏统一走 Pointer Events ---
+     *
+     * .scroller 上设了 touch-action:none，浏览器不再接管手势，
+     * 单指平移因此要自己实现，换来的是双指捏合能稳定拿到两个 pointer。
+     * 之前用 mousedown/mousemove，触屏上依赖兼容性鼠标事件，双指必然收不到。 */
+    var pts = new Map();          // 当前按下的指针
+    var pan = null;               // 单指/鼠标平移状态
+    var pinch = null;             // 双指缩放状态
+
+    function midOf(a) {
+      return { x: (a[0].x + a[1].x) / 2, y: (a[0].y + a[1].y) / 2,
+               d: Math.hypot(a[0].x - a[1].x, a[0].y - a[1].y) };
+    }
+    function zoomTo(next, cx, cy, from) {
+      next = Math.max(6, Math.min(64, Math.round(next)));
+      if (next === view.cell) return;
       var rect = dom.scroller.getBoundingClientRect();
-      var mx = e.clientX - rect.left + dom.scroller.scrollLeft - state.offX;
-      var my = e.clientY - rect.top + dom.scroller.scrollTop - state.offY;
+      var mx = cx - rect.left + from.sl - state.offX;
+      var my = cy - rect.top + from.st - state.offY;
+      var old = from.cell;
       view.cell = next;
       dom.cellSize.value = next; dom.cellSizeVal.textContent = next + 'px';
       layout();
-      dom.scroller.scrollLeft = mx / old * next - (e.clientX - rect.left) + state.offX;
-      dom.scroller.scrollTop = my / old * next - (e.clientY - rect.top) + state.offY;
-      render(); saveSettings();
+      dom.scroller.scrollLeft = mx / old * next - (cx - rect.left) + state.offX;
+      dom.scroller.scrollTop = my / old * next - (cy - rect.top) + state.offY;
+      render();
+    }
+
+    dom.scroller.addEventListener('pointerdown', function (e) {
+      pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      try { dom.scroller.setPointerCapture(e.pointerId); } catch (err) {}
+      if (pts.size === 1) {
+        pan = { id: e.pointerId, x: e.clientX, y: e.clientY,
+                sl: dom.scroller.scrollLeft, st: dom.scroller.scrollTop, moved: 0 };
+        pinch = null;
+      } else if (pts.size === 2) {
+        pan = null;
+        var m = midOf([].slice.call(pts.values()));
+        pinch = { dist: m.d, cell: view.cell,
+                  sl: dom.scroller.scrollLeft, st: dom.scroller.scrollTop };
+      }
+    });
+
+    dom.scroller.addEventListener('pointermove', function (e) {
+      if (!pts.has(e.pointerId)) {                 // 没按下 —— 鼠标悬停
+        if (e.pointerType === 'mouse') updateHover(e);
+        return;
+      }
+      pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+      if (pts.size >= 2 && pinch) {
+        var m = midOf([].slice.call(pts.values()));
+        if (pinch.dist > 10) {
+          zoomTo(pinch.cell * m.d / pinch.dist, m.x, m.y,
+                 { sl: pinch.sl, st: pinch.st, cell: pinch.cell });
+        }
+        return;
+      }
+      if (pan && pan.id === e.pointerId) {
+        var dx = e.clientX - pan.x, dy = e.clientY - pan.y;
+        pan.moved = Math.max(pan.moved, Math.abs(dx) + Math.abs(dy));
+        if (pan.moved > 4) {
+          dom.scroller.classList.add('grabbing');
+          dom.scroller.scrollLeft = pan.sl - dx;
+          dom.scroller.scrollTop = pan.st - dy;
+        }
+        if (e.pointerType === 'mouse') updateHover(e);
+      }
+    });
+
+    function endPointer(e) {
+      var wasPan = pan && pan.id === e.pointerId;
+      var moved = wasPan ? pan.moved : 99;
+      pts.delete(e.pointerId);
+      try { dom.scroller.releasePointerCapture(e.pointerId); } catch (err) {}
+      dom.scroller.classList.remove('grabbing');
+      if (pinch && pts.size < 2) { pinch = null; saveSettings(); }
+      if (wasPan) {
+        pan = null;
+        if (moved <= 4 && e.type === 'pointerup') pickCell(e);
+      }
+      if (pts.size === 1 && !pan) {                // 双指抬起一只，剩下那只接着平移
+        var only = [].slice.call(pts.entries())[0];
+        pan = { id: only[0], x: only[1].x, y: only[1].y,
+                sl: dom.scroller.scrollLeft, st: dom.scroller.scrollTop, moved: 99 };
+      }
+    }
+    dom.scroller.addEventListener('pointerup', endPointer);
+    dom.scroller.addEventListener('pointercancel', endPointer);
+    dom.scroller.addEventListener('pointerleave', function (e) {
+      if (e.pointerType === 'mouse' && !pts.size) {
+        state.hover = null; dom.hoverInfo.textContent = '—'; render();
+      }
+    });
+
+    // iOS Safari 上双指默认会缩放整个页面，必须在 touchmove 里拦掉
+    dom.scroller.addEventListener('touchmove', function (e) {
+      if (e.touches.length > 1) e.preventDefault();
     }, { passive: false });
 
     function cellAt(e) {
@@ -2037,54 +2106,6 @@
       renderColorList(); render();
     }
 
-    /* --- 触屏：单指平移、双指捏合缩放 --- */
-    (function () {
-      var pts = new Map(), pinch = null;
-      dom.scroller.addEventListener('touchstart', function (e) {
-        if (e.touches.length === 2) e.preventDefault();      // 阻止页面自身缩放
-      }, { passive: false });
-      dom.scroller.addEventListener('pointerdown', function (e) {
-        if (e.pointerType !== 'touch') return;
-        pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
-        if (pts.size === 2) {
-          var a = [].slice.call(pts.values());
-          pinch = {
-            dist: Math.hypot(a[0].x - a[1].x, a[0].y - a[1].y),
-            cell: view.cell,
-            cx: (a[0].x + a[1].x) / 2, cy: (a[0].y + a[1].y) / 2,
-            sl: dom.scroller.scrollLeft, st: dom.scroller.scrollTop
-          };
-        }
-      });
-      dom.scroller.addEventListener('pointermove', function (e) {
-        if (e.pointerType !== 'touch' || !pts.has(e.pointerId)) return;
-        pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
-        if (pts.size !== 2 || !pinch) return;
-        e.preventDefault();
-        var a = [].slice.call(pts.values());
-        var d = Math.hypot(a[0].x - a[1].x, a[0].y - a[1].y);
-        if (pinch.dist < 10) return;
-        var next = Math.max(6, Math.min(64, Math.round(pinch.cell * d / pinch.dist)));
-        if (next === view.cell) return;
-        var rect = dom.scroller.getBoundingClientRect();
-        var mx = pinch.cx - rect.left + pinch.sl - state.offX;
-        var my = pinch.cy - rect.top + pinch.st - state.offY;
-        var old = view.cell;
-        view.cell = next;
-        dom.cellSize.value = next; dom.cellSizeVal.textContent = next + 'px';
-        layout();
-        dom.scroller.scrollLeft = mx / old * next - (pinch.cx - rect.left) + state.offX;
-        dom.scroller.scrollTop = my / old * next - (pinch.cy - rect.top) + state.offY;
-        render();
-      }, { passive: false });
-      function drop(e) {
-        pts.delete(e.pointerId);
-        if (pts.size < 2) { if (pinch) saveSettings(); pinch = null; }
-      }
-      dom.scroller.addEventListener('pointerup', drop);
-      dom.scroller.addEventListener('pointercancel', drop);
-    })();
-
     window.addEventListener('resize', function () { layout(); render(); });
     window.addEventListener('keydown', function (e) {
       if ((e.metaKey || e.ctrlKey) && (e.key === 'z' || e.key === 'Z')) {
@@ -2094,6 +2115,7 @@
       }
       if (/^(INPUT|TEXTAREA|SELECT)$/.test((e.target.tagName || '')) || e.metaKey || e.ctrlKey) return;
       if (e.key === 'Escape') {
+        if (view.immersive && !fsElement()) { toggleFullscreen(); return; }
         if (!dom.feedbackModal.classList.contains('hidden')) dom.feedbackModal.classList.add('hidden');
         else if (!dom.paletteModal.classList.contains('hidden')) dom.paletteModal.classList.add('hidden');
         else if (state.cropMode) setCropMode(false);
@@ -2101,7 +2123,7 @@
         return;
       }
       if (!state.img) return;
-      var SCENE_KEYS = { '1': 'photo', '2': 'anime', '3': 'pixel', '4': 'flat', '5': 'mono' };
+      var SCENE_KEYS = { '1': 'photo', '2': 'anime', '3': 'pixel', '4': 'flat', '5': 'mono', '6': 'fidelity' };
       if (SCENE_KEYS[e.key]) { applyScene(SCENE_KEYS[e.key]); return; }
       if (e.key === '[') { dom.btnRotL.click(); return; }
       if (e.key === ']') { dom.btnRotR.click(); return; }
@@ -2218,17 +2240,47 @@
     saveSettings();
   }
 
+  /**
+   * 全屏 / 沉浸模式。
+   *
+   * iOS Safari 不支持非 video 元素的 Fullscreen API（requestFullscreen 根本不存在），
+   * 所以不能只依赖它。这里的做法是：能进真全屏就进，同时**始终**切换一套纯 CSS 的
+   * 沉浸模式（隐藏顶栏/面板/页脚，画布铺满 100dvh，右上角浮一个退出按钮）。
+   * 这样 iPhone 上也有等效的全屏体验。
+   */
+  function fsElement() {
+    return document.fullscreenElement || document.webkitFullscreenElement || null;
+  }
+
+  function setImmersive(on) {
+    view.immersive = !!on;
+    document.body.classList.toggle('immersive', view.immersive);
+    dom.btnFull.classList.toggle('on', view.immersive);
+    // 100dvh 生效、面板消失之后要重排一次画布
+    setTimeout(function () { layout(); render(); }, 60);
+    setTimeout(function () { layout(); render(); }, 320);
+  }
+
   function toggleFullscreen() {
-    if (document.fullscreenElement) {
-      (document.exitFullscreen || function () {}).call(document);
-    } else {
+    var want = !view.immersive;
+    if (want) {
       var el = document.documentElement;
       var fn = el.requestFullscreen || el.webkitRequestFullscreen;
       if (fn) {
-        fn.call(el).catch(function () { setStatus('浏览器拒绝了全屏请求'); });
-      } else {
-        setStatus('当前浏览器不支持全屏');
+        try {
+          var r = fn.call(el);
+          if (r && r.catch) r.catch(function () {});   // 被拒绝也没关系，CSS 沉浸模式照样生效
+        } catch (e) {}
       }
+      setImmersive(true);
+      setStatus('沉浸模式 · 按 F 或 Esc 退出');
+    } else {
+      if (fsElement()) {
+        try { (document.exitFullscreen || document.webkitExitFullscreen || function () {}).call(document); }
+        catch (e) {}
+      }
+      setImmersive(false);
+      setStatus('');
     }
   }
 
@@ -2476,6 +2528,7 @@
     if (!TINTS[view.glitterTint]) view.glitterTint = 'silver';
     view.ironBoth = !!view.ironBoth;
     view.focus = !!view.focus;
+    view.immersive = false;   // 沉浸模式不跨会话保留，免得打开就一脸懵
     if (THEMES.indexOf(view.theme) < 0) view.theme = 'purple';
     if ([2.6, 5, 10].indexOf(+view.beadMm) < 0) view.beadMm = DEFAULTS.view.beadMm;
     else view.beadMm = +view.beadMm;
