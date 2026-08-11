@@ -195,5 +195,64 @@ var bi = Q.remap(big, BW, BH, bp.map(function (i) { return pal[i]; }), { dither:
 var ms = Date.now() - t0;
 ok('128×128 / 32 色 全流程 < 3000ms', ms < 3000, ms + 'ms, 用色 ' + new Set(Array.prototype.slice.call(bi)).size);
 
+/* ---- DPID 纹理保留（Weber et al., SIGGRAPH Asia 2016）----
+ * 指标先定死：「细线贡献度」= 输出从背景色朝细线色移动了多少百分比。
+ * 面积平均是线性平均，贡献度必然≈细线的面积占比；
+ * DPID 的全部意义就是把这个贡献度显著抬上去，否则细线就被稀释没了。 */
+var LW = 800, LH = 200, BG = 245, LINE = 26;
+var lineSrc = new Uint8ClampedArray(LW * LH * 4);
+for (var ly = 0; ly < LH; ly++) {
+  for (var lx = 0; lx < LW; lx++) {
+    var li = (ly * LW + lx) * 4;
+    var v = (ly % 7 === 0) ? LINE : BG;
+    lineSrc[li] = lineSrc[li + 1] = lineSrc[li + 2] = v;
+    lineSrc[li + 3] = 255;
+  }
+}
+function featureContribution(mode, lam) {
+  var g = Q.downsample(lineSrc, LW, LH, 80, 20, mode, lam);
+  var sum = 0, n = 80 * 20;
+  for (var p = 0; p < n; p++) sum += g[p * 4];
+  var mean = sum / n;
+  return (BG - mean) / (BG - LINE);          // 0 = 细线完全消失，1 = 完全由细线主导
+}
+var fcArea = featureContribution('area');
+var fcD0   = featureContribution('dpid', 0);
+var fcD05  = featureContribution('dpid', 0.5);
+var fcD1   = featureContribution('dpid', 1);
+var fcD2   = featureContribution('dpid', 2);
+ok('面积平均下细线贡献度≈其面积占比（1/7≈14%）',
+   Math.abs(fcArea - 1 / 7) < 0.04, (fcArea * 100).toFixed(1) + '%');
+ok('DPID λ=0 与面积平均完全一致',
+   Math.abs(fcD0 - fcArea) < 1e-6, (fcD0 * 100).toFixed(1) + '%');
+ok('DPID λ=1 让细线贡献度提高 3 倍以上',
+   fcD1 > fcArea * 3, (fcArea * 100).toFixed(1) + '% → ' + (fcD1 * 100).toFixed(1) + '%');
+ok('细线贡献度随 λ 单调递增',
+   fcD0 < fcD05 && fcD05 < fcD1 && fcD1 < fcD2,
+   [fcD0, fcD05, fcD1, fcD2].map(function (v) { return (v * 100).toFixed(0) + '%'; }).join(' → '));
+
+// 均匀区域不该被 DPID 变出花样来
+var flatSrc = new Uint8ClampedArray(200 * 200 * 4);
+for (var q2 = 0; q2 < 200 * 200; q2++) {
+  flatSrc[q2*4] = 120; flatSrc[q2*4+1] = 90; flatSrc[q2*4+2] = 200; flatSrc[q2*4+3] = 255;
+}
+var flatOut = Q.downsample(flatSrc, 200, 200, 20, 20, 'dpid', 1);
+var flatOK = true;
+for (var q3 = 0; q3 < 400; q3++) {
+  if (Math.abs(flatOut[q3*4] - 120) > 0.5 || Math.abs(flatOut[q3*4+1] - 90) > 0.5) flatOK = false;
+}
+ok('纯色区域经 DPID 后原样输出（不会凭空造出噪点）', flatOK);
+
+// 透明处理与普通模式一致
+var alphaSrc = new Uint8ClampedArray(40 * 40 * 4);
+for (var q4 = 0; q4 < 40 * 40; q4++) {
+  alphaSrc[q4*4] = 200; alphaSrc[q4*4+1] = 60; alphaSrc[q4*4+2] = 60;
+  alphaSrc[q4*4+3] = (q4 % 40) < 20 ? 255 : 0;
+}
+var aOut = Q.downsample(alphaSrc, 40, 40, 8, 8, 'dpid', 1);
+var leftOpaque = aOut[3] > 200, rightClear = aOut[(4) * 4 + 3] < 40;
+ok('DPID 正确处理透明区', leftOpaque && rightClear,
+   '左半 alpha=' + aOut[3].toFixed(0) + '，右半 alpha=' + aOut[16 + 3].toFixed(0));
+
 print('');
 print(fails === 0 ? '全部通过 ✅' : (fails + ' 项失败 ❌'));

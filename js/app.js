@@ -27,7 +27,7 @@
   var opts = {
     gridW: 64, gridH: 64, lockAspect: true, fitMode: 'cover',
     rotate: 0, flipH: false, flipV: false, crop: null,
-    mosaic: 1, sampleMode: 'area', blur: 0, sharpen: 0,
+    mosaic: 1, sampleMode: 'area', blur: 0, sharpen: 0, texture: 100,
     paletteId: 'mard221', algo: 'kmeans', colors: 16,
     dither: 'none', ditherAmt: 70,
     brightness: 0, contrast: 0, saturation: 0, gamma: 100,
@@ -53,6 +53,7 @@
    'btnFlipH', 'btnFlipV', 'btnCrop', 'btnCropReset', 'scenePresets',
    'gridW', 'gridWNum', 'gridH', 'gridHNum', 'lockAspect', 'fitMode', 'presets', 'sizeInfo',
    'mosaic', 'mosaicVal', 'sampleMode', 'blur', 'blurVal', 'sharpen', 'sharpenVal',
+   'texture', 'textureVal', 'textureRow', 'textureHint',
    'paletteSel', 'btnPalette', 'palInfo', 'algo', 'colors', 'colorsNum',
    'dither', 'ditherAmt', 'ditherAmtVal',
    'brightness', 'brightnessVal', 'contrast', 'contrastVal',
@@ -485,7 +486,7 @@
     var fit = fitSource(gw, gh);
     if (opts.bgRemove) removeBg(fit.data, opts.bgColor, opts.bgTol);
 
-    var grid = Q.downsample(fit.data, fit.w, fit.h, gw, gh, opts.sampleMode);
+    var grid = Q.downsample(fit.data, fit.w, fit.h, gw, gh, opts.sampleMode, opts.texture / 100);
     grid = Q.mosaic(grid, gw, gh, opts.mosaic);
     Q.adjust(grid, opts);
     if (opts.sharpen > 0) grid = Q.sharpen(grid, gw, gh, opts.sharpen);
@@ -1724,7 +1725,13 @@
     bindRange(dom.mosaic, dom.mosaicVal, 'mosaic', function (v) { return v + '×'; });
     bindRange(dom.blur, dom.blurVal, 'blur', function (v) { return v.toFixed(1); });
     bindRange(dom.sharpen, dom.sharpenVal, 'sharpen', function (v) { return v + '%'; });
-    dom.sampleMode.addEventListener('change', function () { opts.sampleMode = this.value; scheduleCompute(); });
+    bindRange(dom.texture, dom.textureVal, 'texture', function (v) { return (v / 100).toFixed(2); });
+    dom.sampleMode.addEventListener('change', function () {
+      opts.sampleMode = this.value;
+      dom.textureRow.hidden = opts.sampleMode !== 'dpid';
+      dom.textureHint.hidden = opts.sampleMode !== 'dpid';
+      scheduleCompute();
+    });
 
     /* --- 颜色 --- */
     dom.paletteSel.addEventListener('change', function () {
@@ -2138,7 +2145,8 @@
     if (!q.toString()) return;
 
     var numOpt = { w: 'gridW', h: 'gridH', colors: 'colors', mosaic: 'mosaic',
-                   blur: 'blur', sharpen: 'sharpen', alpha: 'alphaTh', ditherAmt: 'ditherAmt' };
+                   blur: 'blur', sharpen: 'sharpen', alpha: 'alphaTh', ditherAmt: 'ditherAmt',
+                   texture: 'texture' };
     Object.keys(numOpt).forEach(function (k) {
       if (q.has(k)) {
         var v = parseFloat(q.get(k));
@@ -2414,13 +2422,13 @@
    */
   var ENUMS = {
     fitMode: ['cover', 'contain', 'stretch'],
-    sampleMode: ['area', 'edge', 'dominant', 'nearest'],
+    sampleMode: ['area', 'dpid', 'edge', 'dominant', 'nearest'],
     algo: ['kmeans', 'mediancut', 'direct'],
     dither: ['none', 'fs', 'ordered']
   };
   var RANGES = {
     gridW: [GRID_MIN, GRID_MAX], gridH: [GRID_MIN, GRID_MAX], mosaic: [1, 10], blur: [0, 5], sharpen: [0, 100],
-    colors: [2, 64], ditherAmt: [0, 100], brightness: [-100, 100], contrast: [-100, 100],
+    colors: [2, 64], ditherAmt: [0, 100], texture: [0, 300], brightness: [-100, 100], contrast: [-100, 100],
     saturation: [-100, 100], gamma: [50, 200], bgTol: [0, 100], alphaTh: [0, 255]
   };
   var DEFAULTS = JSON.parse(JSON.stringify({ opts: opts, view: view }));
@@ -2489,6 +2497,9 @@
     dom.fitMode.value = opts.fitMode;
     dom.mosaic.value = opts.mosaic; dom.mosaicVal.textContent = opts.mosaic + '×';
     dom.sampleMode.value = opts.sampleMode;
+    dom.texture.value = opts.texture;
+    dom.textureVal.textContent = (opts.texture / 100).toFixed(2);
+    dom.textureRow.hidden = opts.sampleMode !== 'dpid';
     dom.blur.value = opts.blur; dom.blurVal.textContent = (+opts.blur).toFixed(1);
     dom.sharpen.value = opts.sharpen; dom.sharpenVal.textContent = opts.sharpen + '%';
     dom.paletteSel.value = opts.paletteId;

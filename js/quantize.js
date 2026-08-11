@@ -191,10 +191,82 @@
     return out;
   }
 
-  Q.downsample = function (src, sw, sh, tw, th, mode) {
+  /**
+   * DPID —— Rapid, Detail-Preserving Image Downscaling
+   * (Weber et al., SIGGRAPH Asia 2016)
+   *
+   * 普通面积平均是「一视同仁地取平均」，纹理（细线、格纹、织物、文字）
+   * 因为在块内属于少数派，会被多数派的背景稀释掉，缩完就是一片糊。
+   *
+   * DPID 反过来用一个**反向双边滤波**：像素颜色与块内平均值差得越远，
+   * 权重越大 —— 即「越不合群的像素越重要」。于是细线和纹理不会被平均掉。
+   *
+   *   1) 先算块内普通平均 g（引导值）
+   *   2) 每个像素权重 w_i = |I_i - g|^λ
+   *   3) 输出 = Σ w_i·I_i / Σ w_i
+   *
+   * λ = 0 时退化成普通面积平均；λ 越大纹理越突出，但噪点也会被一起放大，
+   * 所以上限压在 3。块内颜色完全均匀时 Σw = 0，回退到平均值。
+   */
+  function downDPID(src, sw, sh, tw, th, lambda) {
+    var lam = lambda == null ? 1 : lambda;
+    if (lam <= 0.001) return downArea(src, sw, sh, tw, th);
+    var out = new Float32Array(tw * th * 4);
+    var xr = sw / tw, yr = sh / th;
+    for (var ty = 0; ty < th; ty++) {
+      var y0 = Math.floor(ty * yr);
+      var y1 = Math.min(sh, Math.max(y0 + 1, Math.ceil((ty + 1) * yr)));
+      for (var tx = 0; tx < tw; tx++) {
+        var x0 = Math.floor(tx * xr);
+        var x1 = Math.min(sw, Math.max(x0 + 1, Math.ceil((tx + 1) * xr)));
+        var y, x, i, al;
+
+        // 1) 引导值：按 alpha 预乘的普通平均
+        var gr = 0, gg = 0, gb = 0, aSum = 0, n = 0;
+        for (y = y0; y < y1; y++) {
+          var row = y * sw;
+          for (x = x0; x < x1; x++) {
+            i = (row + x) << 2;
+            al = src[i + 3] / 255;
+            gr += src[i] * al; gg += src[i + 1] * al; gb += src[i + 2] * al;
+            aSum += al; n++;
+          }
+        }
+        var o = (ty * tw + tx) << 2;
+        out[o + 3] = n ? (aSum / n) * 255 : 0;
+        if (aSum <= 1e-4) continue;
+        gr /= aSum; gg /= aSum; gb /= aSum;
+
+        // 2) 反向双边加权：离引导值越远权重越大
+        var wr = 0, wg = 0, wb = 0, wSum = 0;
+        for (y = y0; y < y1; y++) {
+          var row2 = y * sw;
+          for (x = x0; x < x1; x++) {
+            i = (row2 + x) << 2;
+            al = src[i + 3] / 255;
+            if (al < 0.004) continue;
+            var dr = src[i] - gr, dg = src[i + 1] - gg, db = src[i + 2] - gb;
+            var dist = Math.sqrt(dr * dr + dg * dg + db * db) / 441.673;   // 归一化到 0..1
+            var wgt = al * Math.pow(dist, lam);
+            wr += src[i] * wgt; wg += src[i + 1] * wgt; wb += src[i + 2] * wgt;
+            wSum += wgt;
+          }
+        }
+        if (wSum > 1e-6) {
+          out[o] = wr / wSum; out[o + 1] = wg / wSum; out[o + 2] = wb / wSum;
+        } else {                                   // 块内完全均匀，退回平均
+          out[o] = gr; out[o + 1] = gg; out[o + 2] = gb;
+        }
+      }
+    }
+    return out;
+  }
+
+  Q.downsample = function (src, sw, sh, tw, th, mode, param) {
     if (mode === 'nearest') return downNearest(src, sw, sh, tw, th);
     if (mode === 'dominant') return downDominant(src, sw, sh, tw, th);
     if (mode === 'edge') return downEdge(src, sw, sh, tw, th);
+    if (mode === 'dpid') return downDPID(src, sw, sh, tw, th, param);
     return downArea(src, sw, sh, tw, th);
   };
 

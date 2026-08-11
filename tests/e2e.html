@@ -155,7 +155,7 @@
     });
 
     /* ---------- 5. 采样方式 ---------- */
-    ['area', 'edge', 'nearest', 'dominant'].forEach(function (m) {
+    ['area', 'dpid', 'edge', 'nearest', 'dominant'].forEach(function (m) {
       var r = run({ dither: 'none', colors: 16, sampleMode: m });
       ok('采样 ' + m, r && r.total === 64 * 48, r.colors + ' 色');
     });
@@ -502,6 +502,50 @@
     run({ colors: 12 });
     ok('边缘保留采样结果完整', APP.summary().total === 60 * 40, APP.summary().total + ' 颗');
     run({ sampleMode: 'area', algo: 'kmeans' });
+
+    /* ---------- 22b-3. 纹理保留（DPID）端到端 ----------
+       算法本身的性质在 tests/unit.js 里量化验证（细线贡献度 14%→50%，随 λ 单调）。
+       这里只验端到端：整条管线接对了、纹理确实更明显、平滑区不被搞成噪点。 */
+    await loadImg('fixtures/texture_test.png', 'texture_test.png');
+    APP.opts.lockAspect = false; APP.opts.gridW = 80; APP.opts.gridH = 60;
+    APP.opts.rotate = 0; APP.opts.flipH = false; APP.opts.flipV = false; APP.opts.crop = null;
+
+    // 细线区（白底 + 深色细横线 + 红竖条）的平均亮度：
+    // 面积平均会把细线稀释成接近白底，DPID 应当明显压暗
+    function meanLuma(x0f, x1f, y0f, y1f) {
+      var r2 = APP.state.result, sum = 0, n = 0;
+      for (var y = Math.floor(r2.h * y0f); y < Math.floor(r2.h * y1f); y++) {
+        for (var x = Math.floor(r2.w * x0f); x < Math.floor(r2.w * x1f); x++) {
+          var i2 = r2.idx[y * r2.w + x];
+          if (i2 < 0) continue;
+          var c2 = r2.sub[i2].rgb;
+          sum += 0.2126 * c2[0] + 0.7152 * c2[1] + 0.0722 * c2[2];
+          n++;
+        }
+      }
+      return n ? +(sum / n).toFixed(1) : -1;
+    }
+    var BASE = { colors: 32, algo: 'kmeans', dither: 'none', mosaic: 1, blur: 0, sharpen: 0,
+                 fitMode: 'stretch', brightness: 0, contrast: 0, saturation: 0, gamma: 100,
+                 bgRemove: false, texture: 100 };
+    run(Object.assign({ sampleMode: 'area' }, BASE));
+    var lumaA = meanLuma(0.52, 0.98, 0.05, 0.45);
+    var smoothA = meanLuma(0.55, 0.95, 0.55, 0.95);
+    run({ sampleMode: 'dpid' });
+    var lumaD = meanLuma(0.52, 0.98, 0.05, 0.45);
+    var smoothD = meanLuma(0.55, 0.95, 0.55, 0.95);
+
+    ok('DPID 让细线区真正显形（不再被稀释成接近白底）', lumaD < lumaA - 25,
+       '细线区平均亮度：面积平均 ' + lumaA + ' → DPID ' + lumaD + '（越低说明细线保留越多）');
+    ok('DPID 不改变平滑渐变区的整体明暗', Math.abs(smoothD - smoothA) < 12,
+       '平滑区（对照）：' + smoothA + ' → ' + smoothD);
+    ok('DPID 结果完整', APP.summary().total === 80 * 60, APP.summary().total + ' 颗');
+
+    run({ sampleMode: 'dpid', texture: 0 });
+    ok('纹理强度 0 时退化为面积平均',
+       Math.abs(meanLuma(0.52, 0.98, 0.05, 0.45) - lumaA) < 1.5,
+       'λ=0 → ' + meanLuma(0.52, 0.98, 0.05, 0.45) + '，面积平均 ' + lumaA);
+    run({ sampleMode: 'area', texture: 100 });
 
     /* ---------- 22c. 旋转 / 翻转 / 裁剪 ---------- */
     await loadImg('fixtures/photo_landscape.png', 'photo_landscape.png');
