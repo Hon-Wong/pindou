@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>拼豆图纸生成器 · 端到端测试</title>
+<style>
+  body{font:13px/1.6 -apple-system,"PingFang SC",sans-serif;background:#0f1216;color:#e6edf3;margin:0;padding:16px}
+  h1{font-size:16px;margin:0 0 4px}
+  #sum{font-size:14px;font-weight:700;padding:8px 12px;border-radius:6px;margin:10px 0;display:inline-block}
+  .pass{background:#123d1c;color:#4ade80}
+  .fail{background:#4a1216;color:#f87171}
+  table{border-collapse:collapse;width:100%;font-size:12px;margin-top:8px}
+  td,th{border-bottom:1px solid #2a323d;padding:4px 8px;text-align:left;vertical-align:top}
+  th{color:#9aa7b4;font-weight:600}
+  tr.f td{background:#2a1417;color:#f87171}
+  tr.p td:first-child{color:#4ade80}
+  .note{color:#6b7889;font-size:11px}
+  /* iframe 必须真实可见：离屏 iframe 的 requestAnimationFrame 会被浏览器节流，
+     那样 scheduleCompute() 这条异步路径根本不会执行，测试会假通过。 */
+  #frame{width:1400px;height:860px;border:1px solid #2a323d;border-radius:8px;display:block;margin-top:14px}
+  h2.sec{font-size:13px;color:#9aa7b4;margin:20px 0 0}
+  #gallery{display:flex;flex-wrap:wrap;gap:12px;margin-top:16px}
+  #gallery figure{margin:0;background:#161b22;padding:8px;border-radius:8px;border:1px solid #2a323d}
+  #gallery figcaption{font-size:11px;color:#9aa7b4;margin-bottom:6px}
+  #gallery canvas,#gallery img{max-width:300px;height:auto;display:block;background:#fff;border-radius:4px}
+</style>
+</head>
+<body>
+<h1>拼豆图纸生成器 · 端到端测试</h1>
+<p class="note">在真实浏览器里驱动 index.html（同源 iframe），覆盖全部图片样例、算法、抖动、色卡与导出。</p>
+<div id="sum">运行中…</div>
+<table id="out"><thead><tr><th style="width:40px">结果</th><th style="width:280px">用例</th><th>说明</th></tr></thead><tbody></tbody></table>
+<div id="gallery"></div>
+<h2 class="sec">被测应用（实时）</h2>
+<iframe id="frame" src="../index.html"></iframe>
+
+<script>
+(function () {
+  'use strict';
+  var tbody = document.querySelector('#out tbody');
+  var pass = 0, fail = 0;
+
+  function ok(name, cond, note) {
+    var tr = document.createElement('tr');
+    tr.className = cond ? 'p' : 'f';
+    tr.innerHTML = '<td>' + (cond ? '✓' : '✗') + '</td><td>' + name + '</td><td>' + (note || '') + '</td>';
+    tbody.appendChild(tr);
+    cond ? pass++ : fail++;
+    return cond;
+  }
+  function show(caption, cv) {
+    var fig = document.createElement('figure');
+    var cap = document.createElement('figcaption');
+    cap.textContent = caption;
+    fig.appendChild(cap); fig.appendChild(cv);
+    document.getElementById('gallery').appendChild(fig);
+  }
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+
+  /**
+   * 轮询等待条件成立。
+   * 按「轮数」而不是 Date.now() 计时：headless 的 --virtual-time-budget 会让
+   * Date.now() 飞速前进，用挂钟计时的话预算瞬间就烧完了，而 iframe 里
+   * requestAnimationFrame 驱动的重算还没来得及跑，会假失败。
+   */
+  async function waitFor(fn, rounds) {
+    rounds = rounds || 150;
+    for (var i = 0; i < rounds; i++) {
+      try { if (fn()) return true; } catch (e) {}
+      await sleep(30);
+    }
+    return false;
+  }
+
+  var frame = document.getElementById('frame');
+  var W, APP;
+
+  function loadImg(path, name) {
+    // iframe 的 base 是 /index.html，相对路径要在本页先解析成绝对地址
+    var abs = new URL(path, location.href).href;
+    return new Promise(function (resolve, reject) {
+      var img = new W.Image();
+      var to = setTimeout(function () { reject(new Error('timeout ' + path)); }, 15000);
+      img.onload = function () {
+        clearTimeout(to);
+        // 直接塞进 app 的 state，绕开 FileReader 的异步链
+        APP.state.img = img;
+        APP.state.imgName = name || path;
+        APP.state.srcW = img.naturalWidth;
+        APP.state.srcH = img.naturalHeight;
+        resolve(img);
+      };
+      img.onerror = function () { clearTimeout(to); reject(new Error('load fail ' + abs)); };
+      img.src = abs;
+    });
+  }
+
+  function run(cfg) {
+    Object.keys(cfg || {}).forEach(function (k) { APP.opts[k] = cfg[k]; });
+    APP.compute();
+    return APP.summary();
+  }
+
+  frame.addEventListener('load', function () { start().catch(function (e) {
+    ok('测试脚本异常', false, e && e.message);
+    finish();
+  }); });
+
+  async function start() {
+    W = frame.contentWindow;
+    await sleep(300);
+    ok('index.html 载入且模块就绪',
+       !!(W.PD && W.PD.app && W.PD.color && W.PD.quantize && W.PD.palettes),
+       'PD.app / color / quantize / palettes');
+    APP = W.PD.app;
+    APP.opts.lockAspect = true;
+
+    var errs = [];
+    W.addEventListener('error', function (e) { errs.push(e.message); });
+
+    /* ---------- 1. 风景照：基本正确性 ---------- */
+    await loadImg('fixtures/photo_landscape.png', 'photo_landscape.png');
+    APP.opts.gridW = 64; APP.opts.gridH = 48; APP.opts.lockAspect = false;
+    var s = run({ colors: 16, algo: 'kmeans', dither: 'none', mosaic: 1,
+                  sampleMode: 'area', paletteId: 'mard', alphaTh: 128,
+                  brightness: 0, contrast: 0, saturation: 0, gamma: 100, bgRemove: false,
+                  blur: 0, sharpen: 0, fitMode: 'cover' });
+    ok('风景照 · 网格尺寸 64×48', s.w === 64 && s.h === 48, s.w + '×' + s.h);
+    ok('风景照 · 总豆数 = 格数', s.total === 64 * 48, s.total + ' 颗，空格 ' + s.empty);
+    ok('风景照 · 色数 ≤ 16 且 ≥ 8', s.colors <= 16 && s.colors >= 8, s.colors + ' 色');
+    ok('风景照 · 色号形如「字母+数字」', s.codes.every(function (c) { return /^[A-Za-z]+\d+:/.test(c); }),
+       s.codes.slice(0, 6).join(' '));
+    ok('风景照 · 天空为蓝系 / 草地为绿系',
+       /^F/.test(codeAt(0, 0)) && /^G/.test(codeAt(32, 44)),
+       '左上 ' + codeAt(0, 0) + '，下方 ' + codeAt(32, 44));
+    ok('风景照 · 各色计数之和 = 总数',
+       s.codes.reduce(function (a, c) { return a + (+c.split(':')[1]); }, 0) === s.total);
+
+    /* ---------- 2. 色数控制 ---------- */
+    var c4 = run({ colors: 4 }), c32 = run({ colors: 32 });
+    ok('量化色数 4 生效', c4.colors <= 4 && c4.colors >= 2, c4.colors + ' 色');
+    ok('量化色数 32 生效且多于 4 色', c32.colors > c4.colors && c32.colors <= 32,
+       c4.colors + ' → ' + c32.colors);
+
+    /* ---------- 3. 三种算法 ---------- */
+    ['kmeans', 'mediancut', 'direct'].forEach(function (a) {
+      var r = run({ colors: 16, algo: a });
+      ok('算法 ' + a, r && r.colors >= 2 && r.colors <= 16 && r.total === 64 * 48, r.colors + ' 色');
+    });
+
+    /* ---------- 4. 三种抖动 ---------- */
+    ['none', 'fs', 'ordered'].forEach(function (d2) {
+      var r = run({ algo: 'kmeans', colors: 12, dither: d2, ditherAmt: 70 });
+      ok('抖动 ' + d2, r && r.total === 64 * 48 && r.colors >= 2, r.colors + ' 色');
+    });
+
+    /* ---------- 5. 采样方式 ---------- */
+    ['area', 'nearest', 'dominant'].forEach(function (m) {
+      var r = run({ dither: 'none', colors: 16, sampleMode: m });
+      ok('采样 ' + m, r && r.total === 64 * 48, r.colors + ' 色');
+    });
+
+    /* ---------- 6. 马赛克 ---------- */
+    var m1 = run({ sampleMode: 'area', mosaic: 1 });
+    var m6 = run({ mosaic: 6 });
+    ok('马赛克 6× 后颜色数不增加', m6.colors <= m1.colors, m1.colors + ' → ' + m6.colors);
+    ok('马赛克后格数不变', m6.w === 64 && m6.h === 48 && m6.total === 64 * 48);
+    ok('马赛克 6× 确实变粗（同色块变大）', blockUniform(6), '抽查 6×6 区块内同色');
+    run({ mosaic: 1 });
+
+    /* ---------- 7. 色卡切换 ---------- */
+    [['mard', /^[ABCDEFGHS]\d+$/], ['hama', /^H\d+$/], ['basic', /^N\d+$/]].forEach(function (p) {
+      var r = run({ paletteId: p[0], colors: 16 });
+      var allMatch = r.codes.every(function (c) { return p[1].test(c.split(':')[0]); });
+      ok('色卡 ' + p[0] + ' 只用本色卡色号', allMatch, r.codes.slice(0, 5).join(' '));
+    });
+    run({ paletteId: 'mard' });
+
+    /* ---------- 8. 透明 / 空格 ---------- */
+    await loadImg('fixtures/sprite_pixel.png', 'sprite_pixel.png');
+    APP.opts.gridW = 32; APP.opts.gridH = 32;
+    var sp = run({ colors: 12, sampleMode: 'dominant', algo: 'kmeans', dither: 'none', fitMode: 'contain' });
+    ok('像素精灵 · 透明区变成空格', sp.empty > 100 && sp.empty < 32 * 32 * 0.8,
+       '空格 ' + sp.empty + ' / ' + (32 * 32));
+    ok('像素精灵 · 有豆子的格子 = 总数', sp.total + sp.empty === 32 * 32);
+    ok('像素精灵 · 出现红系蘑菇伞',
+       sp.codes.some(function (c) { return /^D/.test(c); }), sp.codes.join(' '));
+
+    /* ---------- 9. 扁平插画 ---------- */
+    await loadImg('fixtures/flat_logo.png', 'flat_logo.png');
+    APP.opts.gridW = APP.opts.gridH = 48;
+    var lg = run({ colors: 8, sampleMode: 'dominant' });
+    ok('扁平插画 · 少量颜色即可还原', lg.colors >= 3 && lg.colors <= 8, lg.colors + ' 色');
+    ok('扁平插画 · 角落为空格', lg.empty > 100, '空格 ' + lg.empty);
+
+    /* ---------- 10. 纯色图 ---------- */
+    await loadImg('fixtures/solid.png', 'solid.png');
+    APP.opts.gridW = APP.opts.gridH = 32;
+    var sd = run({ colors: 16, sampleMode: 'area', fitMode: 'cover' });
+    ok('纯色图只产生 1 个颜色', sd.colors === 1, sd.codes.join(' '));
+
+    /* ---------- 11. 全透明图（边界） ---------- */
+    await loadImg('fixtures/fully_transparent.png', 'fully_transparent.png');
+    var beforeErr = errs.length;
+    var tr = run({ colors: 8 });
+    ok('全透明图不抛异常', errs.length === beforeErr, tr ? '仍有结果' : '结果为空（已被安全处理）');
+
+    /* ---------- 12. 细长条（极端宽高比） ---------- */
+    await loadImg('fixtures/thin_strip.png', 'thin_strip.png');
+    APP.opts.lockAspect = true; APP.opts.gridW = 100;
+    APP.opts.gridH = Math.max(8, Math.round(100 * 12 / 600));
+    var th = run({ colors: 8, fitMode: 'cover' });
+    ok('细长条 · 高度被夹到最小 8', th.h === 8, th.w + '×' + th.h);
+    ok('细长条 · 得到粉红系', th.codes.some(function (c) { return /^D/.test(c); }), th.codes.join(' '));
+
+    /* ---------- 13. 大图性能 ---------- */
+    await loadImg('fixtures/big_3000x2000.jpg', 'big_3000x2000.jpg');
+    APP.opts.lockAspect = false; APP.opts.gridW = 128; APP.opts.gridH = 85;
+    var t0 = performance.now();
+    var bg = run({ colors: 32, algo: 'kmeans', dither: 'fs', sampleMode: 'area' });
+    var dt = performance.now() - t0;
+    ok('3000×2000 → 128×85 / 32 色 用时 < 6s', dt < 6000, Math.round(dt) + ' ms，' + bg.colors + ' 色');
+    ok('大图结果完整', bg.total === 128 * 85, bg.total + ' 颗');
+
+    /* ---------- 14. 图像微调 ---------- */
+    await loadImg('fixtures/portrait_tones.jpg', 'portrait_tones.jpg');
+    APP.opts.gridW = 48; APP.opts.gridH = 48;
+    var base = run({ colors: 16, algo: 'kmeans', dither: 'none', sampleMode: 'area',
+                     brightness: 0, contrast: 0, saturation: 0, gamma: 100 });
+    ok('人像 · 命中肤色系（H 系）',
+       base.codes.some(function (c) { return /^H/.test(c); }), base.codes.join(' '));
+    var dark = run({ brightness: -60 });
+    var light = run({ brightness: 60 });
+    ok('亮度调节改变配色结果',
+       dark.codes.join() !== base.codes.join() && light.codes.join() !== base.codes.join(),
+       '暗: ' + dark.codes.slice(0, 3).join(' ') + ' / 亮: ' + light.codes.slice(0, 3).join(' '));
+    var gray = run({ brightness: 0, saturation: -100 });
+    ok('饱和度 -100 → 主要落在无彩色 A 系',
+       gray.codes.filter(function (c) { return /^A/.test(c); }).length >= gray.codes.length * 0.6,
+       gray.codes.join(' '));
+    run({ saturation: 0 });
+
+    /* ---------- 15. 背景色移除 ---------- */
+    await loadImg('fixtures/portrait_tones.jpg', 'portrait_tones.jpg');
+    APP.opts.gridW = APP.opts.gridH = 48;
+    var noBg = run({ bgRemove: false, colors: 12 });
+    var yesBg = run({ bgRemove: true, bgColor: '#eee8dc', bgTol: 14 });
+    ok('移除背景色后空格增多', yesBg.empty > noBg.empty + 100,
+       noBg.empty + ' → ' + yesBg.empty + ' 空格');
+    run({ bgRemove: false });
+
+    /* ---------- 16. 禁用颜色 ---------- */
+    await loadImg('fixtures/photo_landscape.png', 'photo_landscape.png');
+    APP.opts.gridW = 64; APP.opts.gridH = 48;
+    var r16 = run({ colors: 16, algo: 'kmeans', paletteId: 'mard' });
+    var victim = r16.codes[0].split(':')[0];
+    APP.state.disabled.mard = {}; APP.state.disabled.mard[victim] = 1;
+    var r17 = run({});
+    ok('禁用某色后不再出现该色号',
+       !r17.codes.some(function (c) { return c.split(':')[0] === victim; }),
+       '禁用 ' + victim + ' → ' + r17.codes.slice(0, 6).join(' '));
+    APP.state.disabled.mard = {};
+    run({});
+
+    /* ---------- 17. 导出 ---------- */
+    var chart = APP.renderChartCanvas({ cell: 14, legend: true });
+    ok('导出图纸画布尺寸合理',
+       chart && chart.width > 64 * 14 && chart.height > 48 * 14 && chart.width < 16384 && chart.height < 16384,
+       chart ? chart.width + '×' + chart.height : 'null');
+    var pv = APP.renderPreviewCanvas(8);
+    ok('导出预览画布尺寸正确', pv && pv.width === 64 * 8 && pv.height === 48 * 8,
+       pv ? pv.width + '×' + pv.height : 'null');
+    var png = chart.toDataURL('image/png');
+    ok('图纸可导出为 PNG（canvas 未被污染）',
+       png.indexOf('data:image/png') === 0 && png.length > 5000,
+       Math.round(png.length / 1024) + ' KB');
+
+    /* ---------- 18. 视图渲染无异常 ---------- */
+    var beforeErr2 = errs.length;
+    ['chart', 'preview'].forEach(function (v) {
+      APP.view.mode = v;
+      [8, 24, 48].forEach(function (c) { APP.view.cell = c; APP.layout(); APP.render(); });
+    });
+    APP.view.mode = 'chart'; APP.view.cell = 24;
+    ['code', 'symbol', 'both', 'none'].forEach(function (l) { APP.view.labelMode = l; APP.render(); });
+    APP.view.labelMode = 'code';
+    ok('各视图 / 缩放 / 标注模式渲染无报错', errs.length === beforeErr2, errs.slice(beforeErr2).join(' | '));
+
+    /* ---------- 19. CSV / 清单内容 ---------- */
+    var csv = APP.buildCSV();
+    var rows = csv.split('\n');
+    var gridRows = rows.slice(1, 1 + 48);
+    ok('CSV 行数 = 表头 + 48 行网格 + 空行 + 图例',
+       rows.length === 1 + 48 + 1 + 1 + APP.state.result.sub.length,
+       rows.length + ' 行');
+    ok('CSV 每行列数 = 1 + 64', gridRows.every(function (l) { return l.split(',').length === 65; }));
+    ok('CSV 内容与网格一致',
+       gridRows[0].split(',')[1] === codeAt(0, 0) && gridRows[47].split(',')[64] === codeAt(47, 63),
+       gridRows[0].split(',').slice(0, 4).join(','));
+    var lt = APP.listText();
+    ok('配色清单文本含全部色号',
+       APP.state.result.sub.every(function (c) { return lt.indexOf(c.code + '\t') >= 0; }),
+       lt.split('\n').length + ' 行');
+
+    /* ---------- 20. 真实 UI 交互 ---------- */
+    var D = frame.contentDocument;
+    var st = function () { return D.getElementById('status').textContent; };
+
+    D.getElementById('btnSample').click();
+    var sampleOK = await waitFor(function () {
+      return APP.state.img && /示例/.test(APP.state.imgName) && APP.state.srcW === 360 && /生成完成/.test(st());
+    }, 200);
+    ok('点「示例图片」按钮 → 载入内置图并自动出图', sampleOK,
+       APP.state.imgName + ' ' + APP.state.srcW + '×' + APP.state.srcH + ' · ' + st());
+
+    D.getElementById('btnPalette').click();
+    await sleep(120);
+    var chips = D.querySelectorAll('#palList .pchip');
+    ok('色卡弹窗打开且色块数 = 色卡色数',
+       !D.getElementById('paletteModal').classList.contains('hidden')
+       && chips.length === W.PD.palettes.get(APP.opts.paletteId).colors.length,
+       chips.length + ' 个色块');
+    ok('系列筛选按钮已生成', D.querySelectorAll('#palSeries button').length >= 5,
+       D.querySelectorAll('#palSeries button').length + ' 个系列');
+    APP.opts.colors = 24; D.getElementById('colors').value = 24;
+    D.getElementById('btnPalNone').click();
+    var noneOK = await waitFor(function () { return /一个颜色都没勾选/.test(st()); }, 200);
+    ok('「全不选」后提示无可用颜色', noneOK,
+       '启用色数 ' + W.PD.palettes.get(APP.opts.paletteId).colors
+          .filter(function (c) { return !(APP.state.disabled[APP.opts.paletteId] || {})[c.code]; }).length
+       + ' · 状态栏「' + st() + '」');
+
+    D.getElementById('btnPalAll').click();
+    var allOK = await waitFor(function () { return /生成完成/.test(st()); }, 200);
+    ok('「全选」后恢复出图', allOK && !!APP.summary() && APP.summary().colors > 1,
+       (APP.summary() ? APP.summary().colors + ' 色 · ' : '') + st());
+    ok('全不选→全选 不会弄丢「量化色数」设置', APP.opts.colors === 24, '仍为 ' + APP.opts.colors);
+    D.getElementById('btnCloseModal').click();
+
+    var listRows = D.querySelectorAll('#colorList .crow');
+    ok('右侧配色清单行数 = 结果色数', listRows.length === APP.state.result.sub.length,
+       listRows.length + ' 行');
+    listRows[0].click();
+    ok('点击清单行可高亮', APP.state.highlight >= 0, 'highlight=' + APP.state.highlight);
+    listRows[0].click();
+    ok('再次点击取消高亮', APP.state.highlight === -1);
+
+    var before = APP.state.result.sub.length;
+    var seq0 = APP.state.computeSeq;
+    // 清单是按用量排序的，所以要从 DOM 里取第一行对应的色号，而不是 sub[0]
+    var victim2 = D.querySelector('#colorList .crow .code').textContent.trim();
+    D.querySelector('#colorList .crow .kill').click();
+    var killOK = await waitFor(function () { return APP.state.computeSeq > seq0; }, 200);
+    ok('清单里的 🚫 能禁用颜色并重算',
+       killOK && !APP.state.result.sub.some(function (c) { return c.code === victim2; }),
+       '禁用 ' + victim2 + ' · ' + before + ' 色 → ' + APP.summary().colors + ' 色 · 重算了 '
+       + (APP.state.computeSeq - seq0) + ' 次 · disabled='
+       + JSON.stringify(Object.keys(APP.state.disabled[APP.opts.paletteId] || {})));
+    APP.state.disabled[APP.opts.paletteId] = {};
+
+    /* ---------- 21. 非法 URL 参数不能把页面搞崩 ---------- */
+    var bad = document.createElement('iframe');
+    bad.style.cssText = 'width:900px;height:520px;border:1px solid #2a323d;border-radius:8px;display:block;margin-top:10px';
+    var badURL = new URL('../index.html', location.href);
+    badURL.search = '?demo=1&view=BOGUS&algo=nope&dither=xxx&fitMode=??&sampleMode=%20'
+      + '&w=99999&h=-3&colors=abc&cell=-5&mosaic=999&palette=zzz&label=nah&alpha=9e9';
+    bad.src = badURL.href;
+    document.body.appendChild(bad);
+    await new Promise(function (r) { bad.addEventListener('load', r); });
+    var BW = bad.contentWindow;
+    var badOK = await waitFor(function () { return BW.PD && BW.PD.app && BW.PD.app.summary(); }, 200);
+    var bo = BW.PD.app.opts, bv = BW.PD.app.view;
+    ok('非法 URL 参数下仍能正常出图', badOK,
+       badOK ? (BW.PD.app.summary().w + '×' + BW.PD.app.summary().h)
+             : ('没出图 · img=' + !!BW.PD.app.state.img
+                + ' seq=' + BW.PD.app.state.computeSeq
+                + ' 状态「' + bad.contentDocument.getElementById('status').textContent + '」'));
+    ok('非法枚举值回落到默认',
+       bo.algo === 'kmeans' && bo.dither === 'none' && bo.fitMode === 'cover'
+       && bo.sampleMode === 'area' && bv.mode === 'chart' && bv.labelMode === 'code'
+       && bo.paletteId === 'mard',
+       [bo.algo, bo.dither, bo.fitMode, bo.sampleMode, bv.mode, bv.labelMode, bo.paletteId].join(' / '));
+    ok('越界数值被夹到合法范围',
+       bo.gridW === 256 && bo.gridH >= 8 && bo.colors >= 2 && bo.colors <= 64
+       && bv.cell >= 6 && bo.mosaic === 10 && bo.alphaTh <= 255,
+       'w=' + bo.gridW + ' h=' + bo.gridH + ' colors=' + bo.colors
+       + ' cell=' + bv.cell + ' mosaic=' + bo.mosaic + ' alphaTh=' + bo.alphaTh);
+    bad.remove();
+
+    /* ---------- 22. 「全不选」的坏状态不应跨会话保留 ---------- */
+    var lsKey = 'pindou.v1';
+    var saved = JSON.parse(W.localStorage.getItem(lsKey) || '{}');
+    var allOff = {};
+    W.PD.palettes.get('mard').colors.forEach(function (c) { allOff[c.code] = 1; });
+    saved.disabled = { mard: allOff };
+    saved.opts = saved.opts || {}; saved.opts.paletteId = 'mard';
+    W.localStorage.setItem(lsKey, JSON.stringify(saved));
+
+    var rec = document.createElement('iframe');
+    rec.style.cssText = 'width:900px;height:520px;border:1px solid #2a323d;border-radius:8px;display:block;margin-top:10px';
+    rec.src = new URL('../index.html?demo=1', location.href).href;
+    document.body.appendChild(rec);
+    await new Promise(function (r) { rec.addEventListener('load', r); });
+    var RW = rec.contentWindow;
+    var recOK = await waitFor(function () { return RW.PD && RW.PD.app && RW.PD.app.summary(); }, 200);
+    ok('打开时若整张色卡都被禁用，会自动恢复而不是卡死', recOK,
+       recOK ? RW.PD.app.summary().colors + ' 色 · 已恢复 '
+               + RW.PD.palettes.get('mard').colors.length + ' 色可用'
+             : '仍然出不了图：' + rec.contentDocument.getElementById('status').textContent);
+    rec.remove();
+    W.localStorage.removeItem(lsKey);
+
+    ok('全程无未捕获异常', errs.length === 0, errs.join(' | ') || '无');
+
+    /* ---------- 画廊 ---------- */
+    show('导出图纸（cell=14，含图例）', shrink(chart, 300));
+    show('成品预览', shrink(pv, 300));
+    await loadImg('fixtures/sprite_pixel.png', 'sprite');
+    APP.opts.gridW = APP.opts.gridH = 32;
+    run({ colors: 12, sampleMode: 'dominant', fitMode: 'contain' });
+    show('像素精灵 · 图纸', shrink(APP.renderChartCanvas({ cell: 16, legend: true }), 300));
+    show('像素精灵 · 预览', shrink(APP.renderPreviewCanvas(10), 300));
+
+    finish();
+  }
+
+  /* 取某格色号 */
+  function codeAt(y, x) {
+    var r = APP.state.result;
+    var i = r.idx[y * r.w + x];
+    return i < 0 ? '（空）' : r.sub[i].code;
+  }
+  /* 检查马赛克块内是否同色 */
+  function blockUniform(m) {
+    var r = APP.state.result, bad = 0, checked = 0;
+    for (var by = 0; by + m <= r.h; by += m) {
+      for (var bx = 0; bx + m <= r.w; bx += m) {
+        var v = r.idx[by * r.w + bx];
+        for (var y = by; y < by + m; y++) for (var x = bx; x < bx + m; x++) {
+          checked++;
+          if (r.idx[y * r.w + x] !== v) bad++;
+        }
+      }
+    }
+    return checked > 0 && bad === 0;
+  }
+  function shrink(cv, maxW) {
+    if (cv.width <= maxW) return cv;
+    var s = maxW / cv.width;
+    var o = document.createElement('canvas');
+    o.width = maxW; o.height = Math.round(cv.height * s);
+    var c = o.getContext('2d');
+    c.imageSmoothingEnabled = true; c.imageSmoothingQuality = 'high';
+    c.drawImage(cv, 0, 0, o.width, o.height);
+    return o;
+  }
+
+  function finish() {
+    var el = document.getElementById('sum');
+    el.className = fail === 0 ? 'pass' : 'fail';
+    el.textContent = fail === 0
+      ? ('全部通过 ✅  ' + pass + '/' + pass + ' 项')
+      : ('有失败 ❌  通过 ' + pass + '，失败 ' + fail);
+    document.title = (fail === 0 ? 'PASS' : 'FAIL') + ' ' + pass + '/' + (pass + fail);
+    document.body.setAttribute('data-result', fail === 0 ? 'PASS' : 'FAIL');
+    document.body.setAttribute('data-pass', String(pass));
+    document.body.setAttribute('data-fail', String(fail));
+  }
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>拼豆图纸生成器 · Perler Bead Pattern Maker</title>
+<meta name="description" content="上传图片，一键生成带色号的拼豆／拼图豆（Perler / Hama beads）图纸。可调整格数、马赛克程度、量化色数与抖动，支持自定义色卡，导出 PNG / CSV。纯前端，图片不上传服务器。">
+<meta name="theme-color" content="#0f1216">
+<meta property="og:type" content="website">
+<meta property="og:title" content="拼豆图纸生成器">
+<meta property="og:description" content="上传图片 → 生成带色号的拼豆图纸。可调格数、马赛克、量化色数，支持自定义色卡，纯前端处理。">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230f1216'/%3E%3Cg fill='none' stroke-width='4'%3E%3Ccircle cx='10' cy='10' r='4' stroke='%23e8262b'/%3E%3Ccircle cx='22' cy='10' r='4' stroke='%23ffd400'/%3E%3Ccircle cx='10' cy='22' r='4' stroke='%231fa3d8'/%3E%3Ccircle cx='22' cy='22' r='4' stroke='%2346a749'/%3E%3C/g%3E%3C/svg%3E">
+<link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">◍</span>
+    <div>
+      <h1>拼豆图纸生成器</h1>
+      <p>上传图片 → 生成带色号的拼豆图纸</p>
+    </div>
+  </div>
+  <div class="topbar-actions">
+    <button id="btnOpen" class="btn primary">📂 打开图片</button>
+    <div class="menu-wrap">
+      <button id="btnExportMenu" class="btn">⬇ 导出</button>
+      <div id="exportMenu" class="menu hidden">
+        <button id="btnExportChart">图纸 PNG（含色号+图例）</button>
+        <button id="btnExportPreview">成品预览 PNG</button>
+        <button id="btnExportCSV">色号表 CSV</button>
+        <button id="btnCopyList">复制配色清单</button>
+        <hr>
+        <button id="btnSaveSettings">导出参数 JSON</button>
+        <button id="btnLoadSettings">导入参数 JSON</button>
+      </div>
+    </div>
+    <button id="btnPrint" class="btn">🖨 打印</button>
+    <button id="btnReset" class="btn ghost">重置</button>
+  </div>
+</header>
+
+<main class="layout">
+
+  <!-- ============ 左侧参数面板 ============ -->
+  <aside class="panel left">
+
+    <section class="group">
+      <h2>1 · 图片</h2>
+      <div id="dropZone" class="dropzone">
+        <img id="thumb" alt="" hidden>
+        <div id="dropHint">
+          <strong>拖拽图片到这里</strong>
+          <span>或点击选择 · 也可直接 Ctrl/⌘+V 粘贴</span>
+        </div>
+      </div>
+      <p id="imgMeta" class="meta">未载入图片</p>
+      <button id="btnSample" class="btn wide">✨ 先用示例图片试试</button>
+      <input type="file" id="fileInput" accept="image/*" hidden>
+    </section>
+
+    <section class="group">
+      <h2>2 · 尺寸（像素数目）</h2>
+      <div class="row">
+        <label for="gridW">宽度格数</label>
+        <input type="range" id="gridW" min="8" max="256" step="1" value="64">
+        <input type="number" id="gridWNum" min="8" max="256" value="64" class="num">
+      </div>
+      <div class="row">
+        <label for="gridH">高度格数</label>
+        <input type="range" id="gridH" min="8" max="256" step="1" value="64">
+        <input type="number" id="gridHNum" min="8" max="256" value="64" class="num">
+      </div>
+      <label class="check"><input type="checkbox" id="lockAspect" checked> 高度按原图比例自动计算</label>
+      <div class="row">
+        <label for="fitMode">裁切方式</label>
+        <select id="fitMode">
+          <option value="cover">填充裁切（铺满，裁掉多余）</option>
+          <option value="contain">完整包含（周围留空）</option>
+          <option value="stretch">拉伸变形</option>
+        </select>
+      </div>
+      <div class="presets" id="presets">
+        <button data-w="29" data-h="29">29×29</button>
+        <button data-w="57" data-h="57">57×57</button>
+        <button data-w="32" data-h="32">32×32</button>
+        <button data-w="48" data-h="48">48×48</button>
+        <button data-w="64" data-h="64">64×64</button>
+        <button data-w="100" data-h="100">100×100</button>
+      </div>
+      <p id="sizeInfo" class="meta"></p>
+    </section>
+
+    <section class="group">
+      <h2>3 · 马赛克 / 采样</h2>
+      <div class="row">
+        <label for="mosaic">马赛克程度</label>
+        <input type="range" id="mosaic" min="1" max="10" step="1" value="1">
+        <span class="val" id="mosaicVal">1×</span>
+      </div>
+      <p class="hint">每 N×N 个格子合并成一个色块，数值越大越粗犷（格数不变）。</p>
+      <div class="row">
+        <label for="sampleMode">采样方式</label>
+        <select id="sampleMode">
+          <option value="area">面积平均（照片推荐）</option>
+          <option value="dominant">主色/众数（像素画、扁平插画）</option>
+          <option value="nearest">最近邻（最锐利）</option>
+        </select>
+      </div>
+      <div class="row">
+        <label for="blur">预模糊</label>
+        <input type="range" id="blur" min="0" max="5" step="0.5" value="0">
+        <span class="val" id="blurVal">0</span>
+      </div>
+      <div class="row">
+        <label for="sharpen">锐化</label>
+        <input type="range" id="sharpen" min="0" max="100" step="1" value="0">
+        <span class="val" id="sharpenVal">0%</span>
+      </div>
+    </section>
+
+    <section class="group">
+      <h2>4 · 颜色 / 量化</h2>
+      <div class="row">
+        <label for="paletteSel">拼豆色卡</label>
+        <select id="paletteSel"></select>
+      </div>
+      <button id="btnPalette" class="btn wide">🎨 管理色卡 / 只用我有的颜色</button>
+      <p id="palInfo" class="meta"></p>
+
+      <div class="row">
+        <label for="algo">量化算法</label>
+        <select id="algo">
+          <option value="kmeans">K-Means（Lab 空间，质量最好）</option>
+          <option value="mediancut">中位切分（快速、稳定）</option>
+          <option value="direct">直接匹配色卡（保留原色调）</option>
+        </select>
+      </div>
+      <div class="row">
+        <label for="colors">量化色数</label>
+        <input type="range" id="colors" min="2" max="64" step="1" value="16">
+        <input type="number" id="colorsNum" min="2" max="64" value="16" class="num">
+      </div>
+      <div class="row">
+        <label for="dither">抖动</label>
+        <select id="dither">
+          <option value="none">无（色块干净，推荐）</option>
+          <option value="fs">Floyd–Steinberg（渐变更细腻）</option>
+          <option value="ordered">有序抖动（规则网点）</option>
+        </select>
+      </div>
+      <div class="row">
+        <label for="ditherAmt">抖动强度</label>
+        <input type="range" id="ditherAmt" min="0" max="100" step="1" value="70">
+        <span class="val" id="ditherAmtVal">70%</span>
+      </div>
+
+      <details class="sub">
+        <summary>图像微调</summary>
+        <div class="row"><label for="brightness">亮度</label>
+          <input type="range" id="brightness" min="-100" max="100" step="1" value="0">
+          <span class="val" id="brightnessVal">0</span></div>
+        <div class="row"><label for="contrast">对比度</label>
+          <input type="range" id="contrast" min="-100" max="100" step="1" value="0">
+          <span class="val" id="contrastVal">0</span></div>
+        <div class="row"><label for="saturation">饱和度</label>
+          <input type="range" id="saturation" min="-100" max="100" step="1" value="0">
+          <span class="val" id="saturationVal">0</span></div>
+        <div class="row"><label for="gamma">伽马</label>
+          <input type="range" id="gamma" min="50" max="200" step="1" value="100">
+          <span class="val" id="gammaVal">1.00</span></div>
+      </details>
+
+      <details class="sub">
+        <summary>背景 / 透明</summary>
+        <label class="check"><input type="checkbox" id="bgRemove"> 移除背景色（变成空格）</label>
+        <div class="row">
+          <label for="bgColor">背景色</label>
+          <input type="color" id="bgColor" value="#ffffff">
+          <button id="btnPickBg" class="btn tiny">在图上吸取</button>
+        </div>
+        <div class="row">
+          <label for="bgTol">容差</label>
+          <input type="range" id="bgTol" min="0" max="100" step="1" value="12">
+          <span class="val" id="bgTolVal">12</span>
+        </div>
+        <div class="row">
+          <label for="alphaTh">透明阈值</label>
+          <input type="range" id="alphaTh" min="0" max="255" step="1" value="128">
+          <span class="val" id="alphaThVal">128</span>
+        </div>
+      </details>
+    </section>
+
+    <section class="group">
+      <h2>5 · 显示</h2>
+      <div class="seg" id="viewMode">
+        <button data-v="chart" class="on">图纸（色号）</button>
+        <button data-v="preview">成品预览</button>
+      </div>
+      <div class="row">
+        <label for="cellSize">格子大小</label>
+        <input type="range" id="cellSize" min="6" max="64" step="1" value="24">
+        <span class="val" id="cellSizeVal">24px</span>
+      </div>
+      <div class="row">
+        <label for="labelMode">格内标注</label>
+        <select id="labelMode">
+          <option value="code">色号（如 D6）</option>
+          <option value="symbol">符号（黑白打印友好）</option>
+          <option value="both">色号 + 符号</option>
+          <option value="none">不显示</option>
+        </select>
+      </div>
+      <div class="row">
+        <label for="beadShape">豆子形状</label>
+        <select id="beadShape">
+          <option value="round">圆形带孔</option>
+          <option value="square">方形</option>
+        </select>
+      </div>
+      <label class="check"><input type="checkbox" id="showGrid" checked> 显示网格线</label>
+      <label class="check"><input type="checkbox" id="showBold10" checked> 每 10 格加粗分隔</label>
+      <label class="check"><input type="checkbox" id="showRuler" checked> 显示行列标尺</label>
+      <div class="row">
+        <label for="beadMm">豆子规格</label>
+        <select id="beadMm">
+          <option value="2.6">小号 2.6mm</option>
+          <option value="5" selected>中号 5mm</option>
+          <option value="10">大号 10mm</option>
+        </select>
+      </div>
+    </section>
+  </aside>
+
+  <!-- ============ 中间画布 ============ -->
+  <section class="stage">
+    <div class="viewport" id="viewport">
+      <canvas id="mainCanvas"></canvas>
+      <canvas id="rulerTop"></canvas>
+      <canvas id="rulerLeft"></canvas>
+      <div id="corner" class="corner"></div>
+      <div id="scroller" class="scroller"><div id="spacer"></div></div>
+      <div id="emptyState" class="empty">
+        <div class="empty-inner">
+          <div class="empty-icon">◍</div>
+          <h3>还没有图片</h3>
+          <p>点击左上角「打开图片」，或把图片拖进来</p>
+        </div>
+      </div>
+      <div id="busy" class="busy hidden"><div class="spinner"></div><span>计算中…</span></div>
+    </div>
+    <div class="statusbar">
+      <span id="hoverInfo">—</span>
+      <span class="spacer-x"></span>
+      <span id="status"></span>
+    </div>
+  </section>
+
+  <!-- ============ 右侧统计 ============ -->
+  <aside class="panel right">
+    <section class="group">
+      <h2>配色清单</h2>
+      <div class="stats">
+        <div><b id="statColors">0</b><span>颜色数</span></div>
+        <div><b id="statTotal">0</b><span>豆子总数</span></div>
+        <div><b id="statSize">—</b><span>格数</span></div>
+        <div><b id="statPhysical">—</b><span>成品尺寸</span></div>
+      </div>
+      <div class="row tight">
+        <input type="search" id="listSearch" placeholder="搜索色号 / 颜色名" class="search">
+        <select id="listSort">
+          <option value="count">按用量排序</option>
+          <option value="code">按色号排序</option>
+          <option value="hue">按色相排序</option>
+        </select>
+      </div>
+      <p class="hint">点击某行可在图纸中高亮该颜色；点 🚫 可禁用该色并自动替换为最接近的可用色。</p>
+      <div id="colorList" class="color-list"></div>
+    </section>
+  </aside>
+</main>
+
+<!-- ============ 色卡管理弹窗 ============ -->
+<div id="paletteModal" class="modal hidden">
+  <div class="modal-box">
+    <div class="modal-head">
+      <h3>色卡管理</h3>
+      <button id="btnCloseModal" class="btn ghost">✕</button>
+    </div>
+    <div class="modal-toolbar">
+      <input type="search" id="palSearch" placeholder="搜索色号或颜色名" class="search">
+      <button id="btnPalAll" class="btn tiny">全选</button>
+      <button id="btnPalNone" class="btn tiny">全不选</button>
+      <button id="btnPalInvert" class="btn tiny">反选</button>
+      <span id="palCount" class="meta"></span>
+    </div>
+    <div id="palSeries" class="series-bar"></div>
+    <div id="palList" class="pal-list"></div>
+    <details class="sub custom-pal">
+      <summary>自定义色卡（粘贴 CSV：色号,名称,#十六进制）</summary>
+      <textarea id="customCsv" rows="6" placeholder="A1,纯白,#FFFFFF&#10;A9,黑色,#1A1A1A&#10;D6,大红,#E8262B"></textarea>
+      <div class="row tight">
+        <button id="btnApplyCustom" class="btn">保存为「我的色卡」</button>
+        <button id="btnExportPal" class="btn ghost">导出当前色卡 CSV</button>
+      </div>
+      <p class="hint">内置色卡的色值为常见拼豆色卡的<b>近似值</b>，用于配色计算。若想完全精确，请按你手上的实体色卡把 CSV 粘进来。</p>
+    </details>
+  </div>
+</div>
+
+<input type="file" id="settingsInput" accept="application/json,.json" hidden>
+
+<script src="js/color.js"></script>
+<script src="js/palettes.js"></script>
+<script src="js/quantize.js"></script>
+<script src="js/sample.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
