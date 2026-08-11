@@ -254,5 +254,75 @@ var leftOpaque = aOut[3] > 200, rightClear = aOut[(4) * 4 + 3] < 40;
 ok('DPID 正确处理透明区', leftOpaque && rightClear,
    '左半 alpha=' + aOut[3].toFixed(0) + '，右半 alpha=' + aOut[16 + 3].toFixed(0));
 
+/* ---- 感知优化降采样（Öztireli & Gross, SIGGRAPH 2015）----
+ * 论文的核心主张是「让输出的局部对比度等于原图的局部对比度」（σ_x = σ_h）。
+ * 所以指标就是标准差保留率：普通 box 降采样会让 std 随格数减少而塌陷，
+ * 这正是「格子一少纹理就没了」的根因；本方法应当把 std 稳住。 */
+var TW = 600, TH = 600;
+var texSrc = new Uint8ClampedArray(TW * TH * 4);
+(function () {
+  var f = [[3,40],[7,30],[17,22],[41,14]];
+  for (var y = 0; y < TH; y++) {
+    for (var x = 0; x < TW; x++) {
+      var v = 128;
+      for (var k = 0; k < f.length; k++) {
+        v += Math.sin(x / f[k][0] + Math.cos(y / (f[k][0] * 1.3)) * 2.1) * f[k][1] * 0.5
+           + Math.cos(y / f[k][0] * 1.1 + Math.sin(x / (f[k][0] * 0.9)) * 1.7) * f[k][1] * 0.5;
+      }
+      v = Math.max(0, Math.min(255, v));
+      var i = (y * TW + x) * 4;
+      texSrc[i] = texSrc[i+1] = texSrc[i+2] = v; texSrc[i+3] = 255;
+    }
+  }
+})();
+function stdOf(arr, n) {
+  var m = 0, p;
+  for (p = 0; p < n; p++) m += arr[p * 4];
+  m /= n;
+  var s2 = 0;
+  for (p = 0; p < n; p++) { var d = arr[p * 4] - m; s2 += d * d; }
+  return Math.sqrt(s2 / n);
+}
+var srcStd = stdOf(texSrc, TW * TH);
+function stdAt(mode, g) { return stdOf(Q.downsample(texSrc, TW, TH, g, g, mode, 1), g * g); }
+
+var a40 = stdAt('area', 40), s40 = stdAt('ssim', 40);
+var a20 = stdAt('area', 20), s20 = stdAt('ssim', 20);
+ok('面积平均确实会随格数减少而丢纹理（复现问题本身）',
+   a40 < srcStd * 0.7 && a20 < a40,
+   '原图 std=' + srcStd.toFixed(1) + ' → 40×40 时 ' + a40.toFixed(1) + ' → 20×20 时 ' + a20.toFixed(1));
+ok('感知优化在 40×40 保住 ≥85% 的局部对比度',
+   s40 > srcStd * 0.85, srcStd.toFixed(1) + ' → ' + s40.toFixed(1)
+   + '（面积平均只有 ' + a40.toFixed(1) + '）');
+ok('格数减到 20×20 仍然保住 ≥85%',
+   s20 > srcStd * 0.85, srcStd.toFixed(1) + ' → ' + s20.toFixed(1)
+   + '（面积平均只有 ' + a20.toFixed(1) + '）');
+ok('感知优化不受格数影响而塌陷（这正是要解决的问题）',
+   Math.abs(s20 - s40) < srcStd * 0.15, s40.toFixed(1) + ' vs ' + s20.toFixed(1));
+
+// 纯色区不能被动
+var flat2 = new Uint8ClampedArray(200 * 200 * 4);
+for (var z2 = 0; z2 < 200 * 200; z2++) {
+  flat2[z2*4] = 120; flat2[z2*4+1] = 90; flat2[z2*4+2] = 200; flat2[z2*4+3] = 255;
+}
+var fo2 = Q.downsample(flat2, 200, 200, 20, 20, 'ssim');
+var flatOK2 = true;
+for (var z3 = 0; z3 < 400; z3++) {
+  if (Math.abs(fo2[z3*4] - 120) > 1 || Math.abs(fo2[z3*4+1] - 90) > 1) flatOK2 = false;
+}
+ok('感知优化下纯色区原样输出（不会无中生有）', flatOK2);
+
+// 平滑渐变不该被搞出振铃
+var gr2 = new Uint8ClampedArray(400 * 100 * 4);
+for (var gy2 = 0; gy2 < 100; gy2++) for (var gx2 = 0; gx2 < 400; gx2++) {
+  var gi = (gy2 * 400 + gx2) * 4, gv = Math.round(30 + gx2 * 0.5);
+  gr2[gi] = gr2[gi+1] = gr2[gi+2] = gv; gr2[gi+3] = 255;
+}
+var go2 = Q.downsample(gr2, 400, 100, 40, 10, 'ssim');
+var ga2 = Q.downsample(gr2, 400, 100, 40, 10, 'area');
+var maxDev = 0;
+for (var z4 = 0; z4 < 400; z4++) maxDev = Math.max(maxDev, Math.abs(go2[z4*4] - ga2[z4*4]));
+ok('平滑渐变不会被搞出振铃（与面积平均偏差 < 5）', maxDev < 5, '最大偏差 ' + maxDev.toFixed(2));
+
 print('');
 print(fails === 0 ? '全部通过 ✅' : (fails + ' 项失败 ❌'));

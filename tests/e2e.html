@@ -377,7 +377,7 @@
                 + ' 状态「' + bad.contentDocument.getElementById('status').textContent + '」'));
     ok('非法枚举值回落到默认',
        bo.algo === 'kmeans' && bo.dither === 'none' && bo.fitMode === 'cover'
-       && bo.sampleMode === 'area' && bv.mode === 'chart' && bv.labelMode === 'code'
+       && bo.sampleMode === 'ssim' && bv.mode === 'chart' && bv.labelMode === 'code'
        && bo.paletteId === 'mard221',
        [bo.algo, bo.dither, bo.fitMode, bo.sampleMode, bv.mode, bv.labelMode, bo.paletteId].join(' / '));
     ok('越界数值被夹到合法范围',
@@ -546,6 +546,25 @@
        Math.abs(meanLuma(0.52, 0.98, 0.05, 0.45) - lumaA) < 1.5,
        'λ=0 → ' + meanLuma(0.52, 0.98, 0.05, 0.45) + '，面积平均 ' + lumaA);
     run({ sampleMode: 'area', texture: 100 });
+
+    // 感知优化降采样的算法性质（局部对比度不随格数塌陷）在 tests/unit.js 里
+    // 用受控纹理严格验证：28.0 → 面积平均 15.2/10.3，感知优化 27.3/27.1。
+    // 这里只验证它在整条管线里接对了：结果完整、与面积平均确实不同、无异常。
+    await loadImg('fixtures/texture_test.png', 'texture_test.png');
+    APP.opts.lockAspect = false; APP.opts.gridW = 40; APP.opts.gridH = 30;
+    APP.opts.colors = 24; APP.opts.dither = 'none'; APP.opts.algo = 'kmeans';
+    APP.opts.fitMode = 'stretch'; APP.opts.mosaic = 1; APP.opts.blur = 0; APP.opts.sharpen = 0;
+    var errB = errs.length;
+    run({ sampleMode: 'area' });
+    var areaCodes = APP.summary().codes.join('|');
+    run({ sampleMode: 'ssim' });
+    var ssimSum = APP.summary();
+    ok('感知优化采样在整条管线里生效（结果与面积平均不同）',
+       ssimSum.codes.join('|') !== areaCodes,
+       '面积平均 ' + areaCodes.split('|').length + ' 色 → 感知优化 ' + ssimSum.colors + ' 色');
+    ok('感知优化结果完整且无异常',
+       ssimSum.total === 40 * 30 && errs.length === errB, ssimSum.total + ' 颗');
+    APP.opts.colors = 16;
 
     /* ---------- 22c. 旋转 / 翻转 / 裁剪 ---------- */
     await loadImg('fixtures/photo_landscape.png', 'photo_landscape.png');

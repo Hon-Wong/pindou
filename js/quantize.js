@@ -262,11 +262,129 @@
     return out;
   }
 
+  /**
+   * 感知优化降采样 —— Perceptually Based Downscaling of Images
+   * (Öztireli & Gross, ACM TOG / SIGGRAPH 2015)
+   *
+   * 论文把降采样写成「让输出与原图的 SSIM 最大」的优化问题，并给出闭式解（式 7）：
+   *
+   *     d*ᵢ = μ_h + (σ_h / σ_l) · (lᵢ − μ_h)
+   *
+   * 对覆盖同一像素的各个 patch 取平均后（式 8）可整理成可直接计算的形式：
+   *
+   *     D = L · box(R) + box(M − R·M),   R = σ_h / σ_l
+   *
+   * 其中 L 是普通 box 降采样，M = box(L) 是局部均值，
+   * σ_l² = box(L²) − M² 是「降采样图」的局部方差，
+   * σ_h² = box(L2) − M² 是「原图」在该区域内的方差（L2 = 对原图平方做 box 降采样）。
+   *
+   * 论文自己的解读：这等价于一个**自适应 unsharp masking**——
+   * 锐化系数 σ_h/σ_l 由局部内容决定：原图细节多而降采样后被抹平的地方
+   * （σ_h 大、σ_l 小）锐化强，平坦区域 σ_h≈0 则完全不动。
+   * 所以它不像固定锐化那样满图起振铃，也不像 DPID 那样需要手调强度。
+   *
+   * 实现上全部是输出分辨率上的 box 滤波，开销极小。
+   */
+  function boxBlur(a, w, h, r) {
+    if (r < 1) return a;
+    var tmpH = new Float32Array(a.length), out = new Float32Array(a.length);
+    var x, y, i, sum, n;
+    for (y = 0; y < h; y++) {                       // 横向
+      for (x = 0; x < w; x++) {
+        sum = 0; n = 0;
+        for (i = x - r; i <= x + r; i++) {
+          if (i < 0 || i >= w) continue;
+          sum += a[y * w + i]; n++;
+        }
+        tmpH[y * w + x] = sum / n;
+      }
+    }
+    for (x = 0; x < w; x++) {                       // 纵向
+      for (y = 0; y < h; y++) {
+        sum = 0; n = 0;
+        for (i = y - r; i <= y + r; i++) {
+          if (i < 0 || i >= h) continue;
+          sum += tmpH[i * w + x]; n++;
+        }
+        out[y * w + x] = sum / n;
+      }
+    }
+    return out;
+  }
+
+  function downSSIM(src, sw, sh, tw, th) {
+    var PATCH = 1;                                  // 3×3 patch（论文说 patch 取得很小）
+    var EPS = 1e-4, RMAX = 8;
+    var n = tw * th;
+    var out = new Float32Array(n * 4);
+
+    // L：普通 box 降采样（按 alpha 预乘）；L2：对原图平方做同样的降采样
+    var L = [new Float32Array(n), new Float32Array(n), new Float32Array(n)];
+    var L2 = [new Float32Array(n), new Float32Array(n), new Float32Array(n)];
+    var xr = sw / tw, yr = sh / th;
+    for (var ty = 0; ty < th; ty++) {
+      var y0 = Math.floor(ty * yr);
+      var y1 = Math.min(sh, Math.max(y0 + 1, Math.ceil((ty + 1) * yr)));
+      for (var tx = 0; tx < tw; tx++) {
+        var x0 = Math.floor(tx * xr);
+        var x1 = Math.min(sw, Math.max(x0 + 1, Math.ceil((tx + 1) * xr)));
+        var s0 = 0, s1 = 0, s2 = 0, q0 = 0, q1 = 0, q2 = 0, aSum = 0, cnt = 0;
+        for (var y = y0; y < y1; y++) {
+          var row = y * sw;
+          for (var x = x0; x < x1; x++) {
+            var i4 = (row + x) << 2;
+            var al = src[i4 + 3] / 255;
+            var r0 = src[i4] / 255, g0 = src[i4 + 1] / 255, b0 = src[i4 + 2] / 255;
+            s0 += r0 * al; s1 += g0 * al; s2 += b0 * al;
+            q0 += r0 * r0 * al; q1 += g0 * g0 * al; q2 += b0 * b0 * al;
+            aSum += al; cnt++;
+          }
+        }
+        var p = ty * tw + tx;
+        out[(p << 2) + 3] = cnt ? (aSum / cnt) * 255 : 0;
+        if (aSum > 1e-4) {
+          L[0][p] = s0 / aSum; L[1][p] = s1 / aSum; L[2][p] = s2 / aSum;
+          L2[0][p] = q0 / aSum; L2[1][p] = q1 / aSum; L2[2][p] = q2 / aSum;
+        }
+      }
+    }
+
+    for (var c = 0; c < 3; c++) {
+      var Lc = L[c], L2c = L2[c];
+      var LL = new Float32Array(n);
+      for (var k = 0; k < n; k++) LL[k] = Lc[k] * Lc[k];
+
+      var M = boxBlur(Lc, tw, th, PATCH);           // μ_h
+      var mLL = boxBlur(LL, tw, th, PATCH);
+      var mL2 = boxBlur(L2c, tw, th, PATCH);
+
+      var R = new Float32Array(n), RM = new Float32Array(n);
+      for (var j = 0; j < n; j++) {
+        var mm = M[j] * M[j];
+        var sl2 = Math.max(0, mLL[j] - mm);         // σ_l²
+        var sh2 = Math.max(0, mL2[j] - mm);         // σ_h²
+        var r = (sh2 < EPS || sl2 < EPS) ? 0 : Math.sqrt(sh2) / Math.sqrt(sl2);
+        if (r > RMAX) r = RMAX;
+        R[j] = r;
+        RM[j] = M[j] - r * M[j];
+      }
+      var mR = boxBlur(R, tw, th, PATCH);
+      var mRM = boxBlur(RM, tw, th, PATCH);
+
+      for (var t2 = 0; t2 < n; t2++) {
+        var v = Lc[t2] * mR[t2] + mRM[t2];
+        out[(t2 << 2) + c] = v < 0 ? 0 : v > 1 ? 255 : v * 255;
+      }
+    }
+    return out;
+  }
+
   Q.downsample = function (src, sw, sh, tw, th, mode, param) {
     if (mode === 'nearest') return downNearest(src, sw, sh, tw, th);
     if (mode === 'dominant') return downDominant(src, sw, sh, tw, th);
     if (mode === 'edge') return downEdge(src, sw, sh, tw, th);
     if (mode === 'dpid') return downDPID(src, sw, sh, tw, th, param);
+    if (mode === 'ssim') return downSSIM(src, sw, sh, tw, th);
     return downArea(src, sw, sh, tw, th);
   };
 

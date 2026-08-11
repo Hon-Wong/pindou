@@ -27,7 +27,7 @@
   var opts = {
     gridW: 64, gridH: 64, lockAspect: true, fitMode: 'cover',
     rotate: 0, flipH: false, flipV: false, crop: null,
-    mosaic: 1, sampleMode: 'area', blur: 0, sharpen: 0, texture: 100,
+    mosaic: 1, sampleMode: 'ssim', blur: 0, sharpen: 0, texture: 100,
     paletteId: 'mard221', algo: 'kmeans', colors: 16,
     dither: 'none', ditherAmt: 70,
     brightness: 0, contrast: 0, saturation: 0, gamma: 100,
@@ -253,8 +253,17 @@
     // 一旦和真正要绘制的画布不同步，裁剪区域就会算错。
     var src = sourceCanvas();
     var sw = src.width, sh = src.height;
-    // 每格用 k×k 个源像素做面积平均，k 由源图分辨率决定
-    var k = Math.max(1, Math.min(12, Math.round(Math.max(sw / gw, sh / gh))));
+
+    // 每格用 k×k 个源像素来采样。
+    //
+    // k 的上限必须按「中间图总像素」来卡，不能按倍数卡死。
+    // 之前写成固定 min(k, 12)，格数一少就等于先让浏览器把原图缩成一张小图，
+    // 而那是普通低通滤波——纹理在采样算法看到它之前就已经被抹平了。
+    // 格子越少糊得越狠：20×5 格时 DPID 的细线保留度只剩 12.6%，
+    // 比什么都不做（面积平均 14.3%）还差。
+    var MAX_PX = 4e6;                                   // 中间图最多 400 万像素
+    var kMax = Math.max(1, Math.floor(Math.sqrt(MAX_PX / Math.max(1, gw * gh))));
+    var k = Math.max(1, Math.min(kMax, Math.round(Math.max(sw / gw, sh / gh))));
     var fw = gw * k, fh = gh * k;
 
     var cv = state.fitCanvas;
@@ -417,7 +426,7 @@
    * ========================================================== */
   var SCENES = {
     photo: { label: '照片',
-      sampleMode: 'area', algo: 'kmeans', colors: 24, dither: 'none',
+      sampleMode: 'ssim', algo: 'kmeans', colors: 24, dither: 'none',
       mosaic: 1, blur: 0, sharpen: 15, contrast: 6, saturation: 8, gamma: 100 },
     // 动漫/插画：大片平涂 + 细线稿。用众数采样保住平涂区不糊，
     // 关掉抖动免得干净色块被打成噪点，锐化把线条拉回来，饱和度补一点。
@@ -2422,7 +2431,7 @@
    */
   var ENUMS = {
     fitMode: ['cover', 'contain', 'stretch'],
-    sampleMode: ['area', 'dpid', 'edge', 'dominant', 'nearest'],
+    sampleMode: ['ssim', 'area', 'dpid', 'edge', 'dominant', 'nearest'],
     algo: ['kmeans', 'mediancut', 'direct'],
     dither: ['none', 'fs', 'ordered']
   };

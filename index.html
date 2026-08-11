@@ -139,8 +139,9 @@
       <div class="row">
         <label for="sampleMode">采样方式</label>
         <select id="sampleMode">
-          <option value="area">面积平均（照片推荐）</option>
-          <option value="dpid">纹理保留 DPID（细线、格纹、织物）</option>
+          <option value="ssim">感知优化（照片推荐 · 格数少也保住纹理）</option>
+          <option value="area">面积平均（最朴素，纹理会被抹平）</option>
+          <option value="dpid">DPID 细线增强（线稿、格纹、文字）</option>
           <option value="edge">边缘保留（硬边不发灰）</option>
           <option value="dominant">主色/众数（像素画、扁平插画）</option>
           <option value="nearest">最近邻（最锐利）</option>
@@ -151,9 +152,9 @@
         <input type="range" id="texture" min="0" max="300" step="5" value="100">
         <span class="val" id="textureVal">1.00</span>
       </div>
-      <p class="hint" id="textureHint" hidden>DPID（反向双边加权）：像素与邻域差得越远，权重越大，
-        所以细线、格纹、织物不会被平均掉。0 = 等同面积平均；1.0 为推荐值；
-        调太高纹理会喧宾夺主、噪点也被放大。</p>
+      <p class="hint" id="textureHint" hidden>DPID（反向双边加权）：像素与邻域差得越远权重越大，细线/文字不会被平均掉。
+        0 = 等同面积平均，1.0 推荐，太高则噪点也被放大。<br>
+        注：自然纹理（织物、树叶、皮肤）建议用「感知优化」，DPID 对这类几乎没有效果。</p>
       <div class="row">
         <label for="blur">预模糊</label>
         <input type="range" id="blur" min="0" max="5" step="0.5" value="0">
