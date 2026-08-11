@@ -294,8 +294,18 @@ details.sub>*:not(summary){margin-top:8px}
   :root{--panel-w:270px;--panel-r:240px}
 }
 @media (max-width:900px){
-  body{overflow:auto}
-  .layout{grid-template-columns:1fr;grid-template-rows:auto 60vh auto}
-  .panel{max-height:none;border:0;border-bottom:1px solid var(--line)}
-  .panel.right{border-left:0;border-top:1px solid var(--line)}
+  /* 竖排：整页滚动，各面板完整展开（不要再各自内部滚动，否则控件被藏起来） */
+  html,body{height:auto}
+  body{overflow:auto;display:block}
+  .topbar{position:sticky;top:0;z-index:50}
+  .layout{display:block}
+  .panel{overflow:visible;max-height:none;border:0;border-bottom:1px solid var(--line)}
+  .panel.left,.panel.right{border-left:0;border-right:0}
+  .stage{height:70vh;min-height:400px}
+  .statusbar{flex-wrap:wrap}
+  .pal-list{grid-template-columns:repeat(auto-fill,minmax(130px,1fr))}
+}
+@media (max-width:520px){
+  .topbar{flex-wrap:wrap;gap:8px}
+  .stats{grid-template-columns:1fr}
 }

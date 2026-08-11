@@ -410,6 +410,47 @@
     rec.remove();
     W.localStorage.removeItem(lsKey);
 
+    /* ---------- 23. 响应式：任何宽度都不该出现横向溢出 ---------- */
+    var WIDTHS = [380, 420, 560, 860, 1024];
+    for (var wi = 0; wi < WIDTHS.length; wi++) {
+      var vw = WIDTHS[wi];
+      var rf = document.createElement('iframe');
+      rf.style.cssText = 'width:' + vw + 'px;height:760px;border:1px solid #2a323d;'
+        + 'border-radius:8px;display:block;margin-top:10px';
+      rf.src = new URL('../index.html?demo=1&w=29&h=29&colors=10', location.href).href;
+      document.body.appendChild(rf);
+      await new Promise(function (r) { rf.addEventListener('load', r); });
+      var FW = rf.contentWindow, FD = rf.contentDocument;
+      await waitFor(function () { return FW.PD && FW.PD.app && FW.PD.app.summary(); }, 200);
+      // body 上有 overflow:auto 时它自己就是滚动容器，只看 documentElement 会漏掉溢出
+      var de = FD.documentElement;
+      var scrollW = Math.max(de.scrollWidth, FD.body.scrollWidth);
+      var over = scrollW - vw;
+      // 找右边缘越界的元素时要跳过 .scroller —— 图纸画布本来就靠它裁剪，
+      // getBoundingClientRect 不受祖先裁剪影响，否则会误报。
+      var worst = 0, culprit = '';
+      [].forEach.call(FD.querySelectorAll('.panel *, .topbar *'), function (el) {
+        var r2 = el.getBoundingClientRect();
+        if (r2.width > 0 && r2.right > worst) {
+          worst = r2.right;
+          culprit = (el.tagName + '.' + (el.className || '')).slice(0, 40);
+        }
+      });
+      ok('宽度 ' + vw + 'px 时无横向溢出', over <= 1 && worst <= vw + 1,
+         'scrollWidth ' + scrollW + ' / 面板内最右元素 ' + culprit + ' @' + Math.round(worst) + 'px');
+
+      // 窄屏最容易出问题的是「标签+滑块+数值框」这类行，数值框不能被挤出面板
+      var panelR = FD.querySelector('.panel.left').getBoundingClientRect().right;
+      var clipped = ['gridWNum', 'colorsNum', 'mosaicVal', 'ditherAmtVal', 'cellSizeVal']
+        .filter(function (id) {
+          var r3 = FD.getElementById(id).getBoundingClientRect();
+          return r3.width < 4 || r3.right > panelR + 1;
+        });
+      ok('宽度 ' + vw + 'px 时数值框/读数没有被挤出面板', clipped.length === 0,
+         clipped.length ? '被挤出：' + clipped.join(', ') : '全部可见（面板右缘 ' + Math.round(panelR) + 'px）');
+      rf.remove();
+    }
+
     ok('全程无未捕获异常', errs.length === 0, errs.join(' | ') || '无');
 
     /* ---------- 画廊 ---------- */
